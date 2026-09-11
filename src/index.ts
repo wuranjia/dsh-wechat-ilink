@@ -79,6 +79,30 @@ export function resolveModel(
   return undefined;
 }
 
+/** Dependencies the WeChat ask handler needs (satisfied by the bridge + config). */
+export interface WeChatAskHandlerDeps {
+  askMode: "wechat" | "auto" | "web";
+  ownsAgentSession(agent: { session: { header: { id: string } } }): boolean;
+  tryClaimQuestion(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> | undefined;
+}
+
+/**
+ * The user-questions waterfall handler: claims WeChat-owned agents'
+ * questions (relaying them to WeChat), auto-answers in `auto` mode, and
+ * delegates everything else to the next answerer (the Web GUI).
+ */
+export function createWeChatAskHandler(deps: WeChatAskHandlerDeps) {
+  return (request: AskUserQuestionRequest, next: () => Promise<AskUserQuestionAnswer>): Promise<AskUserQuestionAnswer> => {
+    if (deps.askMode === "auto" && request.agent !== undefined
+      && deps.ownsAgentSession(request.agent)) {
+      return Promise.resolve(autoAnswer(request.questions));
+    }
+    // in auto mode tryClaimQuestion never claims (owned agents were answered above); the uniform path keeps agentless requests delegating correctly
+    const claimed = deps.tryClaimQuestion(request);
+    return claimed === undefined ? next() : claimed;
+  };
+}
+
 export function apply(ctx: Context, config: PluginConfig): void {
   const storageDir = expandHome(config.storageDir);
   const workspaceRoot = expandHome(config.workspaceRoot);
@@ -107,14 +131,11 @@ export function apply(ctx: Context, config: PluginConfig): void {
   ctx.on("session/event", (session, event) => bridge.onSessionEvent(session, event));
 
   if (config.askMode !== "web") {
-    ctx.on("user-questions/request", (request, next) => {
-      if (config.askMode === "auto" && request.agent !== undefined
-        && bridge.ownsAgentSession(request.agent)) {
-        return Promise.resolve(autoAnswer(request.questions));
-      }
-      const claimed = bridge.tryClaimQuestion(request);
-      return claimed === undefined ? next() : claimed;
-    }, { prepend: true });
+    ctx.on("user-questions/request", createWeChatAskHandler({
+      askMode: config.askMode,
+      ownsAgentSession: (agent) => bridge.ownsAgentSession(agent),
+      tryClaimQuestion: (request) => bridge.tryClaimQuestion(request),
+    }), { prepend: true });
   }
 
   ctx.effect(() => {
