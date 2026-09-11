@@ -49,11 +49,15 @@ createUserMessage({
 （`kind: "plugin"` 是内置类型，无需模块增强；`summary` 上限 120 字符。）
 
 **回复提取**：插件 ctx 上 `ctx.on("session/event", (session, event) => ...)`（全局
-firehose，参照 dsh-acp 按 `session.header.id` 过滤）。`event.type === "turn/end"` 带
-`{ turn, reason }`；`session.snapshotEvents()` 返回全部事件；
-`session.deriveEventMessage(event)` 把 `assistant/message` 事件转成 Message，
-其 `content` 里 `type === "text"` 的块有 `.text`。turn 结束时该 turn 的
-assistant 事件已在 log 里。
+firehose，参照 dsh-acp 按 `session.header.id` 过滤）。**事件 payload 嵌套在
+`event.data` 下**（`SessionEvent = {type, seq, time, data, ignorable?}`）：
+`turn/end` 的 turn/reason 在 `event.data`；`assistant/message` 的 turn/message
+在 `event.data.turn`/`event.data.message`。`session.snapshotEvents()` 返回全部
+事件；`session.deriveEventMessage(event)` 把 `assistant/message` 事件转成
+Message，其 `content` 里 `type === "text"` 的块有 `.text`。`Message` 类型从
+`@deepseek-ai/dsh-llm` 导入（dsh-session 只重导出 Assistant/User/System/
+ToolResult 特化类型，不导出基础 Message）。turn 结束时该 turn 的 assistant 事件
+已在 log 里。
 
 **agentOptions**：`config.model` 未设时用
 `ctx.agentDefaultModel.currentSelection()` → `{ provider, model }`。
@@ -361,22 +365,25 @@ git add -A && git commit -m "feat: durable user-to-session bridge store"
 ```ts
 import { describe, expect, it } from "vitest";
 import { extractTurnReply, messageText, truncateForWeChat, type ReplySession } from "../src/reply.js";
-import type { Message, SessionEvent } from "@deepseek-ai/dsh-session";
+import type { Message } from "@deepseek-ai/dsh-llm";
+import type { SessionEvent } from "@deepseek-ai/dsh-session";
 
 function assistantEvent(seq: number, turn: number, text: string): SessionEvent {
   return {
     type: "assistant/message",
     seq: seq as never,
     time: 0,
-    turn,
-    step: 1,
-    message: {
-      id: `m${seq}` as never,
-      role: "assistant",
-      content: text === "" ? [] : [{ type: "text", text }],
-      source: { kind: "model", provider: "p", model: "m" },
+    data: {
+      turn,
+      step: 1,
+      message: {
+        id: `m${seq}` as never,
+        role: "assistant",
+        content: text === "" ? [] : [{ type: "text", text }],
+        source: { kind: "model", provider: "p", model: "m" },
+      },
+      stream: [],
     },
-    stream: [],
   } as never;
 }
 
@@ -384,7 +391,7 @@ function fakeSession(events: SessionEvent[]): ReplySession {
   return {
     snapshotEvents: () => events,
     deriveEventMessage: (event) =>
-      event.type === "assistant/message" ? (event.message as Message) : null,
+      event.type === "assistant/message" ? (event.data.message as Message) : null,
   };
 }
 
@@ -459,7 +466,8 @@ Expected: FAIL — 无法解析 `../src/reply.js`。
 - [ ] **Step 3: 实现 `src/reply.ts`**
 
 ```ts
-import type { Message, SessionEvent } from "@deepseek-ai/dsh-session";
+import type { Message } from "@deepseek-ai/dsh-llm";
+import type { SessionEvent } from "@deepseek-ai/dsh-session";
 
 /** The minimal session surface reply extraction needs (satisfied by real Session). */
 export interface ReplySession {
@@ -486,7 +494,7 @@ export function extractTurnReply(session: ReplySession, turn: number): string | 
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
     if (event.type !== "assistant/message") continue;
-    if (event.turn !== turn) continue;
+    if (event.data.turn !== turn) continue;
     const message = session.deriveEventMessage(event);
     if (message === null || message.role !== "assistant") continue;
     const text = messageText(message);
@@ -986,7 +994,7 @@ describe("WeChatBridge.onSessionEvent (reply routing)", () => {
   }
 
   function turnEnd(turn: number, reason: string): SessionEvent {
-    return { type: "turn/end", seq: 99 as never, time: 0, turn, reason: { kind: reason } } as never;
+    return { type: "turn/end", seq: 99 as never, time: 0, data: { turn, reason: { kind: reason } } } as never;
   }
 
   it("sends the turn's assistant text back to the owning user", async () => {
@@ -1044,7 +1052,7 @@ describe("WeChatBridge.onSessionEvent (reply routing)", () => {
     const { bridge, sessionId } = await bridgeWithLiveUser();
     const session = fakeSession([]);
     bridge.onSessionEvent({ ...session, header: { id: sessionId } }, {
-      type: "turn/start", seq: 1 as never, time: 0, turn: 2,
+      type: "turn/start", seq: 1 as never, time: 0, data: { turn: 2 },
     } as never);
     await Promise.resolve();
     expect(world.sender.send).not.toHaveBeenCalled();
@@ -1065,10 +1073,10 @@ Expected: 新增 7 个用例 FAIL（`onSessionEvent` 不存在）。
     if (event.type !== "turn/end") return;
     const userId = this.sessionOwners.get(session.header.id);
     if (userId === undefined) return;
-    const text = extractTurnReply(session, event.turn);
-    const failed = event.reason.kind === "error";
+    const text = extractTurnReply(session, event.data.turn);
+    const failed = event.data.reason.kind === "error";
     if (text === null) {
-      if (event.reason.kind === "aborted") return;
+      if (event.data.reason.kind === "aborted") return;
       void this.sender.send(userId, NO_TEXT_REPLY)
         .catch((error) => this.replyFailed(userId, error));
       return;

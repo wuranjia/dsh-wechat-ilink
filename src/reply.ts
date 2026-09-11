@@ -1,4 +1,5 @@
-import type { Message, SessionEvent } from "@deepseek-ai/dsh-session";
+import type { Message } from "@deepseek-ai/dsh-llm";
+import type { SessionEvent } from "@deepseek-ai/dsh-session";
 
 /** The minimal session surface reply extraction needs (satisfied by real Session). */
 export interface ReplySession {
@@ -25,7 +26,7 @@ export function extractTurnReply(session: ReplySession, turn: number): string | 
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
     if (event.type !== "assistant/message") continue;
-    if (event.turn !== turn) continue;
+    if (event.data.turn !== turn) continue;
     const message = session.deriveEventMessage(event);
     if (message === null || message.role !== "assistant") continue;
     const text = messageText(message);
