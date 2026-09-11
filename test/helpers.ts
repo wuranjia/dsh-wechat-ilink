@@ -1,0 +1,75 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { vi } from "vitest";
+import type { BridgeConfig, BridgeContext } from "../src/bridge.js";
+
+export interface FakeHandle {
+  agent: { session: { header: { id: string } }; followup: ReturnType<typeof vi.fn> };
+  dispose: ReturnType<typeof vi.fn>;
+}
+
+export function makeFakeHandle(sessionId: string): FakeHandle {
+  return {
+    agent: { session: { header: { id: sessionId } }, followup: vi.fn() },
+    dispose: vi.fn(async () => {}),
+  };
+}
+
+export interface FakeWorld {
+  ctx: BridgeContext;
+  create: ReturnType<typeof vi.fn>;
+  resume: ReturnType<typeof vi.fn>;
+  mount: ReturnType<typeof vi.fn>;
+  permissionSet: ReturnType<typeof vi.fn>;
+  rename: ReturnType<typeof vi.fn>;
+  attachSession: ReturnType<typeof vi.fn>;
+  sender: { send: ReturnType<typeof vi.fn>; sendTyping: ReturnType<typeof vi.fn> };
+}
+
+export async function makeFakeWorld(): Promise<{ world: FakeWorld; workspaceRoot: string }> {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "wechat-bridge-ws-"));
+  const create = vi.fn(async (options: { sessionId: string }) => makeFakeHandle(options.sessionId));
+  const resume = vi.fn(async (options: { resumeSessionId: string }) => makeFakeHandle(options.resumeSessionId));
+  const mount = vi.fn(async () => {});
+  const permissionSet = vi.fn();
+  const rename = vi.fn();
+  const attachSession = vi.fn(async () => {});
+  const ctx: BridgeContext = {
+    // The fake handles are structural stand-ins, not full AgentHandle/Agent —
+    // cast at this boundary so the rest of the fake world stays typechecked.
+    agents: { create, resume } as unknown as BridgeContext["agents"],
+    agentPresets: {
+      resolve: vi.fn(async () => ({ id: "standard" })),
+      standingKeyFor: vi.fn(async () => ({})),
+      mount,
+    },
+    permissionPresets: { set: permissionSet },
+    workspaceRegistry: {
+      create: vi.fn(async (path: string) => ({ path, attachSession })),
+    },
+    sessionTitle: { rename },
+    agentDefaultModel: { currentSelection: () => ({ provider: "p", model: "m" }) },
+    logger: { debug: vi.fn(), warn: vi.fn() },
+  };
+  return {
+    world: {
+      ctx, create, resume, mount, permissionSet, rename, attachSession,
+      sender: { send: vi.fn(async () => {}), sendTyping: vi.fn(async () => {}) },
+    },
+    workspaceRoot,
+  };
+}
+
+export function bridgeConfig(workspaceRoot: string, overrides: Partial<BridgeConfig> = {}): BridgeConfig {
+  return {
+    allowUsers: new Set(["u1@im.wechat"]),
+    workspaceRoot,
+    agentPreset: "standard",
+    permissionPreset: "wechat-safe",
+    sessionIdleTimeoutMs: 1_800_000,
+    maxReplyChars: 1800,
+    model: undefined,
+    ...overrides,
+  };
+}
