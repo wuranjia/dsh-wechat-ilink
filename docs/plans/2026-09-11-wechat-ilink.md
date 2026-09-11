@@ -932,11 +932,18 @@ git add -A && git commit -m "feat: bridge message gating and new-session creatio
 
 ---
 
-### Task 5: bridge.ts — resume 路径（持久会话恢复）
+### Task 5: bridge.ts — resume 路径（持久会话恢复 + 并发去重）
 
 **Files:**
 - Modify: `src/bridge.ts`（扩展 `ensureAgent`）
 - Modify: `test/bridge.test.ts`（追加 describe）
+- Modify: `test/helpers.ts`（fake create 调用 setup；暴露断言所需字段）
+
+> 本任务同时修复 Task 4 质量审查发现的问题：(a) `ensureAgent` 的
+> check-then-create 竞态——同一用户连发两条消息会并发创建两个会话、泄漏
+> 第一个 handle；(b) fake create 不调用 `options.setup`，create 序列的关键
+> 步骤（attachSession、setup→mount）未被测试钉住；(c) `agentOptions()` 的
+> model 覆盖分支无测试。
 
 - [ ] **Step 1: 追加失败测试到 `test/bridge.test.ts`**
 
@@ -972,27 +979,73 @@ describe("WeChatBridge.handleMessage (resume path)", () => {
     expect(world.create).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("WeChatBridge concurrency and create-sequence pinning", () => {
+  it("deduplicates concurrent messages from one user into a single create", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await Promise.all([
+      bridge.handleMessage("u1@im.wechat", "text", "一"),
+      bridge.handleMessage("u1@im.wechat", "text", "二"),
+    ]);
+    expect(world.create).toHaveBeenCalledTimes(1);
+    expect(world.attachSession).toHaveBeenCalledTimes(1);
+    const created = (await world.create.mock.results[0].value) as { agent: { followup: ReturnType<typeof vi.fn> } };
+    expect(created.agent.followup).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs the create setup and attaches the session it created", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    expect(world.mount).toHaveBeenCalledTimes(1);
+    const options = world.create.mock.calls[0][0] as { sessionId: string };
+    expect(world.attachSession).toHaveBeenCalledWith(options.sessionId);
+  });
+
+  it("passes an explicit model override into agentOptions", async () => {
+    const bridge = new WeChatBridge(
+      world.ctx,
+      bridgeConfig(workspaceRoot, { model: { provider: "mimo", model: "glm" } }),
+      store,
+      world.sender,
+    );
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    const options = world.create.mock.calls[0][0] as { agentOptions: { provider: string; model: string } };
+    expect(options.agentOptions).toEqual({ provider: "mimo", model: "glm" });
+  });
+});
 ```
 
 - [ ] **Step 2: 运行确认失败**
 
 Run: `pnpm test`
-Expected: resume 3 个用例 FAIL（当前总是走 create）。
+Expected: resume 3 个用例 FAIL（当前总是走 create）；并发去重用例 FAIL（create 被调 2 次）。
 
-- [ ] **Step 3: 扩展 `ensureAgent`——在 create 分支前插入 resume 分支**
+- [ ] **Step 3: 扩展 `ensureAgent`——in-flight 去重 + resume 分支**
 
-把 `src/bridge.ts` 的 `ensureAgent` 开头（`const existing ...` 之后）改为：
+`src/bridge.ts` 的 `ensureAgent` 改为（用 in-flight Promise 去重并发；resume
+分支在 create 分支之前）：
 
 ```ts
-  private async ensureAgent(userId: string): Promise<LiveEntry> {
-    const existing = this.live.get(userId);
-    if (existing !== undefined) return existing;
+  private readonly inflight = new Map<string, Promise<LiveEntry>>();
 
+  private ensureAgent(userId: string): Promise<LiveEntry> {
+    const existing = this.live.get(userId);
+    if (existing !== undefined) return Promise.resolve(existing);
+    const pending = this.inflight.get(userId);
+    if (pending !== undefined) return pending;
+    const created = this.createOrResumeAgent(userId).finally(() => {
+      this.inflight.delete(userId);
+    });
+    this.inflight.set(userId, created);
+    return created;
+  }
+
+  private async createOrResumeAgent(userId: string): Promise<LiveEntry> {
     const stored = await this.store.get(userId);
     if (stored !== undefined && Date.now() - stored.lastActiveMs < this.config.sessionIdleTimeoutMs) {
       try {
         const handle = await this.ctx.agents.resume({
-          resumeSessionId: brandString(stored.sessionId) as SessionId,
+          resumeSessionId: brandString<SessionId>(stored.sessionId),
           agentOptions: this.agentOptions(),
           setup: async (agentCtx: Context) => {
             await this.ctx.agentPresets.mount(agentCtx, this.config.agentPreset);
@@ -1007,13 +1060,19 @@ Expected: resume 3 个用例 FAIL（当前总是走 create）。
     }
 
     const preset = await this.ctx.agentPresets.resolve(this.config.agentPreset);
-    // …以下 create 分支保持 Task 4 原样
+    // …以下 create 分支保持 Task 4 原样（resolve → standingKeyFor → mkdir →
+    // workspaceRegistry.create → agents.create → attachSession →
+    // permissionPresets.set → sessionTitle.rename → remember）
 ```
+
+同时在 `test/helpers.ts`：fake `create` 改为调用 `options.setup?.(agentCtx, agent)`
+（agentCtx 用一个空对象即可，mount 是 mock）；并在 `BridgeContext` 接口
+上加一行注释说明方法语法是 bivariance 的承载（不能改成箭头函数属性）。
 
 - [ ] **Step 4: 运行测试通过**
 
 Run: `pnpm test`
-Expected: 全部 passed。
+Expected: 全部 passed（store 6 + reply 13 + bridge 15）。
 
 - [ ] **Step 5: Commit**
 
