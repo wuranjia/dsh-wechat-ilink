@@ -1820,3 +1820,53 @@ git add -A && git commit -m "chore: v0.1.0 ready for web profile install" --allo
   bridge、index 间签名一致；`ReplySession` 在 reply 与 bridge 间一致 ✓
 - **修正**：spec 中 `agentPreset: 'default'` → 实际默认 `standard`（已核实
   web-app bundle 配置），README 与 Config 均用 `standard`。
+
+---
+
+# v0.2.0 增量：ask 组件支持（2026-09-11 追加）
+
+## 背景
+
+`ask_user_question` 走 user-questions waterfall，由 `dsh-api-remotes` 转发给浏览器
+GUI。微信触发的会话无人看 GUI → 回合挂起。方案：注册 `{ prepend: true }` 的
+微信应答器，认领微信会话的问题。配置 `askMode`：`wechat`（默认，转发微信）/
+`auto`（自动回「由你自行决定」，永不等待）/ `web`（现状，不注册）。
+
+## 已验证事实
+
+- 事件：`'user-questions/request'(this: Scoped<Agent>, request: AskUserQuestionRequestEvent, next: () => Promise<AskUserQuestionAnswer>)` — waterfall，cordis Events 模块增强（@deepseek-ai/dsh-user-questions）
+- `AskUserQuestionRequest = { questions: [{id, question, detail?, header?, options?: [{label, description?}], multiSelect?, intent?}], agent?, signal? }`
+- `AskUserQuestionAnswer = { answers: [{id, selected: string[], custom?}] }`；单选 custom 覆盖 selected；跳过 = `{id, selected: []}`
+- `ctx.on(name, listener, { prepend: true })` 把监听器排到 waterfall 最前（先于 api-remotes 转发器）→ 我们先看到问题
+- `request.agent` 是 live Agent 实例；`agent.session.header.id` 对 sessionOwners 反查
+- 无主问题（agent undefined）与非微信会话必须 `next()` 透传
+- signal abort → ask() 抛 ASK_ABORTED；应答器要在 abort 时清理挂起状态
+- dsh-base 已含 user-questions 服务（web profile 可用）
+
+### Task 12: src/ask.ts — 问题格式化与答案解析（纯函数）
+
+`formatQuestionForWeChat(request)`：单问题带编号选项 + 提示语；多问题用
+[1/2] 编号 + 分号提示；detail 截断附上；multiSelect 标注可多选。
+`parseWeChatAnswer(reply, questions)`：数字→序号；文本→label 匹配（精确→
+忽略大小写→包含）；否则 custom；多选逗号分隔；多问题分号分隔，不足的
+问题补 `{id, selected: []}`（跳过形状）。
+`autoAnswer(questions)`：全部 custom「由你自行决定…」。
+devDep 加 @deepseek-ai/dsh-user-questions（仅类型）。
+
+### Task 13: bridge.ts — 认领与挂起
+
+`pendingQuestions: Map<userId, PendingQuestion>`；`claimUserQuestion(userId,
+request)`：发格式化问题、挂 promise、监听 signal abort（reject + 通知微信
+「问题已取消」）；handleMessage 在 allowlist 之后检查 pending（回复即答案，
+不进 followup）；dispose/forget 清理 pending。
+
+### Task 14: index.ts — askMode 配置与注册
+
+`askMode: z.union(["wechat","auto","web"]).default("wechat")`；非 web 时
+`ctx.on("user-questions/request", handler, { prepend: true })`：无 agent 或
+非微信会话 → next()；wechat → bridge.claimUserQuestion；auto → autoAnswer。
+版本 0.2.0；README 更新。
+
+### Task 15: 打包发布 v0.2.0
+
+build + pack + 装进 web profile + push GitHub。
