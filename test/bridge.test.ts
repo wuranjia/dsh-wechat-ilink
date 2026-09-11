@@ -314,6 +314,17 @@ describe("WeChatBridge idle sweeping and disposal", () => {
     expect(created.dispose).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores messages after dispose()", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    await bridge.dispose();
+    await bridge.handleMessage("u1@im.wechat", "text", "再来");
+    expect(world.create).toHaveBeenCalledTimes(1);
+    // the stored session must not be silently resumed either — full no-op
+    expect(world.resume).not.toHaveBeenCalled();
+    expect(world.sender.send).not.toHaveBeenCalledWith("u1@im.wechat", expect.stringContaining("处理失败"));
+  });
+
   it("disposes the handle when a post-create step throws", async () => {
     world.attachSession.mockRejectedValueOnce(new Error("attach failed"));
     const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);

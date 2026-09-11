@@ -42,7 +42,9 @@ export interface BridgeContext {
   agentPresets: {
     resolve(id: string): Promise<{ id: string }>;
     standingKeyFor(id: string): Promise<unknown>;
-    mount(agentCtx: Context, id: string): Promise<void>;
+    // Promise<unknown>, not Promise<void>: the real AgentPresets.mount resolves
+    // to the mounted preset; the bridge awaits it and discards the value.
+    mount(agentCtx: Context, id: string): Promise<unknown>;
   };
   permissionPresets: { set(session: unknown, name: string): void };
   workspaceRegistry: {
@@ -68,6 +70,7 @@ export class WeChatBridge {
   private readonly live = new Map<string, LiveEntry>();
   private readonly sessionOwners = new Map<string, string>();
   private readonly inflight = new Map<string, Promise<LiveEntry>>();
+  private disposed = false;
 
   constructor(
     private readonly ctx: BridgeContext,
@@ -78,6 +81,7 @@ export class WeChatBridge {
 
   /** Entry point for one incoming WeChat message. */
   async handleMessage(userId: string, type: string, text: string): Promise<void> {
+    if (this.disposed) return;
     if (!this.config.allowUsers.has(userId)) {
       this.ctx.logger.debug(`wechat-ilink: ignored message from non-allowlisted user ${JSON.stringify(userId)}`);
       return;
@@ -146,6 +150,7 @@ export class WeChatBridge {
 
   /** Stop everything (plugin unload); drains in-flight creates first. Store entries are kept so sessions resume on the next start. */
   async dispose(): Promise<void> {
+    this.disposed = true;
     await Promise.allSettled([...this.inflight.values()]);
     for (const [userId, entry] of [...this.live]) {
       this.forget(userId, entry);
