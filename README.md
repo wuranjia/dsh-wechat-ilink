@@ -8,6 +8,7 @@ agent 处理完成后把最终回复发回微信。
 - 会话：每用户一个持久 DSH 会话，重启后自动恢复记忆
 - 权限：`wechat-safe` preset（workspace-write 沙箱 + 需审批操作直接失败）
 - v1 仅支持文本消息
+- 要求 Node ≥ 22（SDK 硬性要求）
 
 ## 安装
 
@@ -58,7 +59,9 @@ dsh --profile web --dump-config
 2. 用白名单外的微信给 bot 发一条消息，日志会打出
    `ignored message from non-allowlisted user "…@im.wechat"`——把该 ID 填进
    `allowUsers`（patchReload: live 会热加载；不行就重启）。
-3. 白名单内用户发消息，agent 处理后回复到达微信；Web GUI 里可见同名会话。
+3. 白名单内用户发消息，agent 处理后回复到达微信；Web GUI 侧栏里可见标题为
+   `WeChat <用户ID>`（用户 ID 中非 `[A-Za-z0-9_-]` 字符替换为 `_`）的会话。
+   插件日志（含二维码、忽略消息提示）输出在启动 `dsh web` 的那个终端。
 
 ## 已知限制
 
@@ -87,3 +90,5 @@ dsh plugin --profile web remove dsh-wechat-ilink
 
 iLink 凭证存于 `storageDir`，可完全操控该微信账号——不要提交到任何仓库。
 `wechat-safe` 让需要审批的操作直接失败（fail-closed），因为微信侧无人审批。
+`allowUsers` 是唯一的访问控制门：白名单内的微信用户即获得一个 agent，
+其文件读写被沙箱限制在该用户的 `workspaceRoot/<用户ID>` 子目录内。

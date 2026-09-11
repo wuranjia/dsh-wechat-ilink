@@ -52,7 +52,7 @@ export interface BridgeContext {
   };
   sessionTitle: { rename(session: unknown, title: string): void };
   agentDefaultModel: { currentSelection(): { provider: string; model: string } };
-  logger: { debug(message: string): void; warn(message: string): void };
+  logger: { debug(message: string): void; info(message: string): void; warn(message: string): void };
 }
 
 interface LiveEntry {
@@ -83,7 +83,10 @@ export class WeChatBridge {
   async handleMessage(userId: string, type: string, text: string): Promise<void> {
     if (this.disposed) return;
     if (!this.config.allowUsers.has(userId)) {
-      this.ctx.logger.debug(`wechat-ilink: ignored message from non-allowlisted user ${JSON.stringify(userId)}`);
+      // info (not debug): this line is the documented way to discover your WeChat
+      // user id for the allowlist, and an unknown contact messaging the bot is a
+      // security-relevant signal worth surfacing at the default log level.
+      this.ctx.logger.info(`wechat-ilink: ignored message from non-allowlisted user ${JSON.stringify(userId)} (add it to allowUsers to accept)`);
       return;
     }
     if (type !== "text" || text.trim() === "") {

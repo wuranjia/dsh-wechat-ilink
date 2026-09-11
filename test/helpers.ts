@@ -75,7 +75,7 @@ export async function makeFakeWorld(): Promise<{ world: FakeWorld; workspaceRoot
     },
     sessionTitle: { rename },
     agentDefaultModel: { currentSelection: () => ({ provider: "p", model: "m" }) },
-    logger: { debug: vi.fn(), warn: vi.fn() },
+    logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
   };
   return {
     world: {
