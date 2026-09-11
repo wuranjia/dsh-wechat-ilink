@@ -1189,20 +1189,27 @@ Expected: 新增 7 个用例 FAIL（`onSessionEvent` 不存在）。
 - [ ] **Step 3: 在 `WeChatBridge` 类中实现 `onSessionEvent`（放在 `handleMessage` 之后）**
 
 ```ts
+const FAILED_NO_TEXT_REPLY = "（本回合处理失败，未产生回复；可重发消息重试）";
+
+/** The session surface onSessionEvent needs (satisfied by the real Session). */
+export type EventSession = ReplySession & { header: { id: string } };
+
   /** `session/event` firehose entry; routes finished turns back to WeChat. */
-  onSessionEvent(session: ReplySession & { header: { id: string } }, event: SessionEvent): void {
+  onSessionEvent(session: EventSession, event: SessionEvent): void {
     if (event.type !== "turn/end") return;
     const userId = this.sessionOwners.get(session.header.id);
     if (userId === undefined) return;
-    const text = extractTurnReply(session, event.data.turn);
-    const failed = event.data.reason.kind === "error";
+    const { turn, reason } = event.data;
+    if (reason.kind === "aborted" || reason.kind === "interrupted") return;
+    const text = extractTurnReply(session, turn);
+    const failed = reason.kind === "error" || reason.kind === "blocked";
     if (text === null) {
-      if (event.data.reason.kind === "aborted") return;
-      void this.sender.send(userId, NO_TEXT_REPLY)
+      const notice = failed ? FAILED_NO_TEXT_REPLY : NO_TEXT_REPLY;
+      void this.sender.send(userId, notice)
         .catch((error) => this.replyFailed(userId, error));
       return;
     }
-    const body = failed ? `${text}\n\n（本回合以错误结束）` : text;
+    const body = reason.kind === "error" ? `${text}\n\n（本回合以错误结束）` : text;
     void this.sender.send(userId, truncateForWeChat(body, this.config.maxReplyChars))
       .catch((error) => this.replyFailed(userId, error));
   }
