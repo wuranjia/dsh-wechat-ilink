@@ -397,15 +397,15 @@ function fakeSession(events: SessionEvent[]): ReplySession {
 
 describe("messageText", () => {
   it("joins text blocks and ignores other blocks", () => {
-    const message = {
+    const message: Message = {
       id: "m" as never,
-      role: "assistant" as const,
+      role: "assistant",
       content: [
         { type: "text", text: "hello " },
-        { type: "tool-call", callId: "c" as never, name: "t", arguments: "{}" },
+        { type: "tool-call", id: "c" as never, name: "t", arguments: "{}" },
         { type: "text", text: "world" },
       ],
-      source: { kind: "model" as const, provider: "p", model: "m" },
+      source: { kind: "model", provider: "p", model: "m" },
     };
     expect(messageText(message)).toBe("hello world");
   });
