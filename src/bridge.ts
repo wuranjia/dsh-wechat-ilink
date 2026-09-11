@@ -105,6 +105,13 @@ export class WeChatBridge {
         await this.sender.send(userId, UNSUPPORTED_TYPE_REPLY);
         return;
       }
+      // answering counts as activity: refresh the clock so the idle sweep
+      // does not dispose the session out from under a still-engaged user
+      const entry = this.live.get(userId);
+      if (entry !== undefined) {
+        entry.lastActiveMs = Date.now();
+        await this.store.set(userId, { sessionId: entry.sessionId, lastActiveMs: entry.lastActiveMs });
+      }
       pending.resolve(parseWeChatAnswer(text, pending.questions));
       return;
     }
@@ -159,6 +166,7 @@ export class WeChatBridge {
    * delegate to the next answerer).
    */
   tryClaimQuestion(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> | undefined {
+    if (this.disposed) return undefined;
     if (request.agent === undefined) return undefined;
     const userId = this.sessionOwners.get(request.agent.session.header.id);
     if (userId === undefined) return undefined;
@@ -168,26 +176,28 @@ export class WeChatBridge {
   private claimUserQuestion(userId: string, request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> {
     this.supersedePending(userId);
     return new Promise<AskUserQuestionAnswer>((resolve, reject) => {
-      const settle = (detach: boolean) => {
-        const pending = this.pendingQuestions.get(userId);
-        if (pending === undefined) return;
+      let pending: PendingQuestion;
+      // identity-checked: only settle our own map entry, never a successor's
+      const settle = () => {
+        if (this.pendingQuestions.get(userId) !== pending) return;
         this.pendingQuestions.delete(userId);
-        if (detach) pending.detachSignal();
+        pending.detachSignal();
       };
       const onAbort = () => {
-        settle(true);
+        settle();
         reject(new Error("ask aborted"));
+        // bot may already be stopped during teardown — the notice is best-effort
         void this.sender.send(userId, "（问题已取消）").catch(() => {});
       };
       request.signal?.addEventListener("abort", onAbort, { once: true });
-      const pending: PendingQuestion = {
+      pending = {
         questions: request.questions,
         resolve: (answer) => {
-          settle(true);
+          settle();
           resolve(answer);
         },
         reject: (error) => {
-          settle(true);
+          settle();
           reject(error);
         },
         detachSignal: () => {
@@ -195,10 +205,15 @@ export class WeChatBridge {
         },
       };
       this.pendingQuestions.set(userId, pending);
-      this.sender.send(userId, formatQuestionForWeChat(request)).catch((error) => {
-        if (this.pendingQuestions.get(userId) !== pending) return; // superseded while in flight
+      try {
+        this.sender.send(userId, formatQuestionForWeChat(request)).catch((error) => {
+          if (this.pendingQuestions.get(userId) !== pending) return; // superseded while in flight
+          pending.reject(error);
+        });
+      } catch (error) {
+        // sender.send threw synchronously — reject this claim, not a successor's
         pending.reject(error);
-      });
+      }
     });
   }
 

@@ -447,6 +447,27 @@ describe("WeChatBridge user-question claiming", () => {
     expect(created.agent.followup).toHaveBeenCalledTimes(2);
   });
 
+  it("refreshes session activity when answering a pending question", async () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.now();
+      const { bridge, agent } = await bridgeWithLiveAgent();
+      const claimed = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never });
+      // the user waits 31 minutes before answering — beyond the idle timeout
+      vi.setSystemTime(start + 31 * 60_000);
+      await bridge.handleMessage("u1@im.wechat", "text", "1");
+      await claimed!;
+      // the answer refreshed the clock: sweeping one minute later must NOT dispose
+      await bridge.sweepIdle(Date.now() + 60_000);
+      const created = (await world.create.mock.results[0].value) as { dispose: ReturnType<typeof vi.fn> };
+      expect(created.dispose).not.toHaveBeenCalled();
+      const stored = await store.get("u1@im.wechat");
+      expect(stored).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects and notifies WeChat when the ask is aborted", async () => {
     const { bridge, agent } = await bridgeWithLiveAgent();
     const controller = new AbortController();
@@ -466,6 +487,19 @@ describe("WeChatBridge user-question claiming", () => {
     const claimed = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never });
     await bridge.dispose();
     await expect(claimed).rejects.toThrow();
+  });
+
+  it("rejects a pending question when the idle sweep forgets the session", async () => {
+    const { bridge, agent } = await bridgeWithLiveAgent();
+    const claimed = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never });
+    // attach the rejection handler before sweeping: the sweep awaits real fs I/O
+    // after forgetting, which would otherwise surface the rejection as unhandled
+    const rejection = expect(claimed).rejects.toThrow("session swept");
+    await bridge.sweepIdle(Date.now() + 1_900_000);
+    await rejection;
+    // reply path is free again
+    await bridge.handleMessage("u1@im.wechat", "text", "再来");
+    expect(world.create).toHaveBeenCalledTimes(2);
   });
 
   it("rejects when the initial question send fails", async () => {
