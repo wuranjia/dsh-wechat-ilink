@@ -5,6 +5,8 @@ import type {
   AskUserQuestionRequest,
 } from "@deepseek-ai/dsh-user-questions";
 
+import { sliceCodeUnits } from "./reply.js";
+
 /** Bound for `detail` text (plans can be long); the question itself is never truncated. */
 const MAX_DETAIL_CHARS = 600;
 
@@ -24,7 +26,7 @@ function questionBlock(item: AskUserQuestionItem): string {
   const lines: string[] = [];
   if (item.detail !== undefined && item.detail !== "") {
     const detail = item.detail.length > MAX_DETAIL_CHARS
-      ? `${item.detail.slice(0, MAX_DETAIL_CHARS)}…（已截断）`
+      ? `${sliceCodeUnits(item.detail, MAX_DETAIL_CHARS)}…（已截断）`
       : item.detail;
     lines.push(detail, "");
   }

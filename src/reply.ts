@@ -43,6 +43,14 @@ export function extractTurnReply(session: ReplySession, turn: number): string | 
   return null;
 }
 
+/** Slice at a UTF-16 code-unit boundary without splitting a surrogate pair. */
+export function sliceCodeUnits(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  let end = maxChars;
+  if (end > 0 && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff) end -= 1;
+  return text.slice(0, end);
+}
+
 /**
  * Truncate a reply for WeChat with an explicit marker.
  *
@@ -52,7 +60,5 @@ export function extractTurnReply(session: ReplySession, turn: number): string | 
  */
 export function truncateForWeChat(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
-  let end = maxChars;
-  if (end > 0 && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff) end -= 1;
-  return `${text.slice(0, end)}\n\n（已截断，完整内容见 DSH 会话）`;
+  return `${sliceCodeUnits(text, maxChars)}\n\n（已截断，完整内容见 DSH 会话）`;
 }

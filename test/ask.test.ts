@@ -33,12 +33,25 @@ describe("formatQuestionForWeChat", () => {
     expect(text).toContain("回复数字或选项文字");
   });
 
-  it("includes truncated detail when present", () => {
+  it("truncates detail beyond the limit with a marker", () => {
+    const longDetail = "计".repeat(800);
     const text = formatQuestionForWeChat(request(
-      question({ id: "q1", question: "批准这个计划吗？", detail: "# 计划\n第一步…".repeat(50) }),
+      question({ id: "q1", question: "批准这个计划吗？", detail: longDetail }),
     ));
     expect(text).toContain("批准这个计划吗？");
-    expect(text.length).toBeLessThan(1200);
+    expect(text).toContain("已截断");
+    expect(text).not.toContain(longDetail);
+  });
+
+  it("does not split a surrogate pair at the detail truncation boundary", () => {
+    const detail = "a".repeat(599) + "😀".repeat(10);
+    const text = formatQuestionForWeChat(request(
+      question({ id: "q1", question: "批准吗？", detail }),
+    ));
+    expect(text).not.toMatch(/\ud83d$/m);
+    // The truncation marker follows on the same line, so a line-end anchor alone
+    // cannot catch an orphaned high surrogate — assert there is none anywhere.
+    expect(text).not.toMatch(/\ud83d(?![\udc00-\udfff])/);
   });
 
   it("numbers multiple questions and asks for semicolon-separated answers", () => {
