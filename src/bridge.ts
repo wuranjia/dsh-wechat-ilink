@@ -26,8 +26,11 @@ export interface BridgeConfig {
   model: { provider: string; model: string } | undefined;
 }
 
-/** The DSH services the bridge uses (satisfied by the real plugin Context). */
-// Method syntax is load-bearing: it carries parameter bivariance, which the real Context's branded parameters rely on — do not convert to arrow-function properties.
+/**
+ * The DSH services the bridge uses (satisfied by the real plugin Context).
+ * Method syntax is load-bearing: it carries parameter bivariance, which the
+ * real Context's branded parameters rely on — do not convert to arrow-function properties.
+ */
 export interface BridgeContext {
   agents: {
     create(options: CreateAgentOptions): Promise<AgentHandle>;
@@ -60,6 +63,7 @@ const NO_TEXT_REPLY = "（任务已完成，无文本回复）";
 export class WeChatBridge {
   private readonly live = new Map<string, LiveEntry>();
   private readonly sessionOwners = new Map<string, string>();
+  private readonly inflight = new Map<string, Promise<LiveEntry>>();
 
   constructor(
     private readonly ctx: BridgeContext,
@@ -98,13 +102,33 @@ export class WeChatBridge {
     }
   }
 
+  /** `session/event` firehose entry; routes finished turns back to WeChat. */
+  onSessionEvent(session: ReplySession & { header: { id: string } }, event: SessionEvent): void {
+    if (event.type !== "turn/end") return;
+    const userId = this.sessionOwners.get(session.header.id);
+    if (userId === undefined) return;
+    const text = extractTurnReply(session, event.data.turn);
+    const failed = event.data.reason.kind === "error";
+    if (text === null) {
+      if (event.data.reason.kind === "aborted") return;
+      void this.sender.send(userId, NO_TEXT_REPLY)
+        .catch((error) => this.replyFailed(userId, error));
+      return;
+    }
+    const body = failed ? `${text}\n\n（本回合以错误结束）` : text;
+    void this.sender.send(userId, truncateForWeChat(body, this.config.maxReplyChars))
+      .catch((error) => this.replyFailed(userId, error));
+  }
+
+  private replyFailed(userId: string, error: unknown): void {
+    this.ctx.logger.warn(`wechat-ilink: reply to ${JSON.stringify(userId)} failed: ${String(error)}`);
+  }
+
   private agentOptions(): { provider: string; model: string } {
     if (this.config.model !== undefined) return { ...this.config.model };
     const { provider, model } = this.ctx.agentDefaultModel.currentSelection();
     return { provider, model };
   }
-
-  private readonly inflight = new Map<string, Promise<LiveEntry>>();
 
   private ensureAgent(userId: string): Promise<LiveEntry> {
     const existing = this.live.get(userId);

@@ -1,9 +1,10 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import { WeChatBridge } from "../src/bridge.js";
 import { JsonFileBridgeStore } from "../src/store.js";
-import { bridgeConfig, makeFakeWorld, type FakeWorld } from "./helpers.js";
+import { assistantEvent, bridgeConfig, fakeSession, makeFakeWorld, type FakeWorld } from "./helpers.js";
 
 let world: FakeWorld;
 let workspaceRoot: string;
@@ -104,8 +105,12 @@ describe("WeChatBridge.handleMessage (resume path)", () => {
     const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
     await bridge.handleMessage("u1@im.wechat", "text", "继续");
     expect(world.resume).toHaveBeenCalledTimes(1);
-    expect(world.resume.mock.calls[0][0]).toMatchObject({ resumeSessionId: "wechat-stored" });
+    expect(world.resume.mock.calls[0][0]).toMatchObject({
+      resumeSessionId: "wechat-stored",
+      agentOptions: { provider: "p", model: "m" },
+    });
     expect(world.create).not.toHaveBeenCalled();
+    expect(world.mount).toHaveBeenCalledTimes(1);
     const resumed = (await world.resume.mock.results[0].value) as { agent: { followup: ReturnType<typeof vi.fn> } };
     expect(resumed.agent.followup).toHaveBeenCalledTimes(1);
   });
@@ -161,5 +166,79 @@ describe("WeChatBridge concurrency and create-sequence pinning", () => {
     await bridge.handleMessage("u1@im.wechat", "text", "你好");
     const options = world.create.mock.calls[0][0] as { agentOptions: { provider: string; model: string } };
     expect(options.agentOptions).toEqual({ provider: "mimo", model: "glm" });
+  });
+});
+
+describe("WeChatBridge.onSessionEvent (reply routing)", () => {
+  async function bridgeWithLiveUser(): Promise<{ bridge: WeChatBridge; sessionId: string }> {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    const stored = await store.get("u1@im.wechat");
+    return { bridge, sessionId: stored!.sessionId };
+  }
+
+  function turnEnd(turn: number, reason: string): SessionEvent {
+    return { type: "turn/end", seq: 99 as never, time: 0, data: { turn, reason: { kind: reason } } } as never;
+  }
+
+  it("sends the turn's assistant text back to the owning user", async () => {
+    const { bridge, sessionId } = await bridgeWithLiveUser();
+    const session = fakeSession([assistantEvent(1, 1, "这是回复")]);
+    bridge.onSessionEvent({ ...session, header: { id: sessionId } }, turnEnd(1, "stop"));
+    await Promise.resolve();
+    expect(world.sender.send).toHaveBeenCalledWith("u1@im.wechat", "这是回复");
+  });
+
+  it("ignores events for sessions it does not own", async () => {
+    const { bridge } = await bridgeWithLiveUser();
+    const session = fakeSession([assistantEvent(1, 1, "text")]);
+    bridge.onSessionEvent({ ...session, header: { id: "other-session" } }, turnEnd(1, "stop"));
+    await Promise.resolve();
+    expect(world.sender.send).not.toHaveBeenCalled();
+  });
+
+  it("sends a no-text notice when the turn produced no assistant text", async () => {
+    const { bridge, sessionId } = await bridgeWithLiveUser();
+    const session = fakeSession([assistantEvent(1, 1, "")]);
+    bridge.onSessionEvent({ ...session, header: { id: sessionId } }, turnEnd(1, "stop"));
+    await Promise.resolve();
+    expect(world.sender.send).toHaveBeenCalledWith("u1@im.wechat", "（任务已完成，无文本回复）");
+  });
+
+  it("stays silent for aborted turns", async () => {
+    const { bridge, sessionId } = await bridgeWithLiveUser();
+    const session = fakeSession([]);
+    bridge.onSessionEvent({ ...session, header: { id: sessionId } }, turnEnd(1, "aborted"));
+    await Promise.resolve();
+    expect(world.sender.send).not.toHaveBeenCalled();
+  });
+
+  it("appends an error marker when the turn ended in error", async () => {
+    const { bridge, sessionId } = await bridgeWithLiveUser();
+    const session = fakeSession([assistantEvent(1, 1, "部分结果")]);
+    bridge.onSessionEvent({ ...session, header: { id: sessionId } }, turnEnd(1, "error"));
+    await Promise.resolve();
+    expect(world.sender.send).toHaveBeenCalledWith("u1@im.wechat", expect.stringContaining("部分结果"));
+    expect(world.sender.send).toHaveBeenCalledWith("u1@im.wechat", expect.stringContaining("错误"));
+  });
+
+  it("truncates long replies to maxReplyChars", async () => {
+    const { bridge, sessionId } = await bridgeWithLiveUser();
+    const session = fakeSession([assistantEvent(1, 1, "x".repeat(5000))]);
+    bridge.onSessionEvent({ ...session, header: { id: sessionId } }, turnEnd(1, "stop"));
+    await Promise.resolve();
+    const sent = world.sender.send.mock.calls.at(-1)?.[1] as string;
+    expect(sent.length).toBeLessThanOrEqual(1800 + 40);
+    expect(sent).toContain("已截断");
+  });
+
+  it("ignores non turn/end events", async () => {
+    const { bridge, sessionId } = await bridgeWithLiveUser();
+    const session = fakeSession([]);
+    bridge.onSessionEvent({ ...session, header: { id: sessionId } }, {
+      type: "turn/start", seq: 1 as never, time: 0, data: { turn: 2 },
+    } as never);
+    await Promise.resolve();
+    expect(world.sender.send).not.toHaveBeenCalled();
   });
 });

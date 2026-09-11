@@ -1,41 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { extractTurnReply, messageText, truncateForWeChat, type ReplySession } from "../src/reply.js";
+import { extractTurnReply, messageText, truncateForWeChat } from "../src/reply.js";
 import { MessageId, ToolCallId, type Message } from "@deepseek-ai/dsh-llm";
-import { SessionSeq, type SessionEvent } from "@deepseek-ai/dsh-session";
-
-function assistantEvent(
-  seq: number,
-  turn: number,
-  text: string,
-  interrupted?: true,
-): SessionEvent<"assistant/message"> {
-  return {
-    type: "assistant/message",
-    seq: SessionSeq(seq),
-    time: 0,
-    surfaceOp: "append",
-    data: {
-      turn,
-      step: 1,
-      message: {
-        id: MessageId(`m${seq}`),
-        role: "assistant",
-        content: text === "" ? [] : [{ type: "text", text }],
-        source: { kind: "model", provider: "p", model: "m" },
-      },
-      stream: [],
-      interrupted,
-    },
-  };
-}
-
-function fakeSession(events: readonly SessionEvent[]): ReplySession {
-  return {
-    snapshotEvents: () => events,
-    deriveEventMessage: (event) =>
-      event.type === "assistant/message" ? event.data.message : null,
-  };
-}
+import { assistantEvent, fakeSession } from "./helpers.js";
 
 describe("messageText", () => {
   it("joins text blocks and ignores other blocks", () => {

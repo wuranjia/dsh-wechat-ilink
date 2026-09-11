@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
 import type { Context } from "@deepseek-ai/cordis";
+import { MessageId } from "@deepseek-ai/dsh-llm";
+import { SessionSeq, type SessionEvent } from "@deepseek-ai/dsh-session";
 import type { BridgeConfig, BridgeContext } from "../src/bridge.js";
+import type { ReplySession } from "../src/reply.js";
 
 export interface FakeHandle {
   agent: { session: { header: { id: string } }; followup: ReturnType<typeof vi.fn> };
@@ -38,7 +41,17 @@ export async function makeFakeWorld(): Promise<{ world: FakeWorld; workspaceRoot
       return handle;
     },
   );
-  const resume = vi.fn(async (options: { resumeSessionId: string }) => makeFakeHandle(options.resumeSessionId));
+  const resume = vi.fn(
+    async (options: {
+      resumeSessionId: string;
+      setup?: (agentCtx: Context, agent: unknown) => unknown;
+    }) => {
+      const handle = makeFakeHandle(options.resumeSessionId);
+      // The real agents.resume awaits setup before the handle becomes visible.
+      await options.setup?.({} as never, handle.agent);
+      return handle;
+    },
+  );
   const mount = vi.fn(async () => {});
   const permissionSet = vi.fn();
   const rename = vi.fn();
@@ -79,5 +92,39 @@ export function bridgeConfig(workspaceRoot: string, overrides: Partial<BridgeCon
     maxReplyChars: 1800,
     model: undefined,
     ...overrides,
+  };
+}
+
+export function assistantEvent(
+  seq: number,
+  turn: number,
+  text: string,
+  interrupted?: true,
+): SessionEvent<"assistant/message"> {
+  return {
+    type: "assistant/message",
+    seq: SessionSeq(seq),
+    time: 0,
+    surfaceOp: "append",
+    data: {
+      turn,
+      step: 1,
+      message: {
+        id: MessageId(`m${seq}`),
+        role: "assistant",
+        content: text === "" ? [] : [{ type: "text", text }],
+        source: { kind: "model", provider: "p", model: "m" },
+      },
+      stream: [],
+      interrupted,
+    },
+  };
+}
+
+export function fakeSession(events: readonly SessionEvent[]): ReplySession {
+  return {
+    snapshotEvents: () => events,
+    deriveEventMessage: (event) =>
+      event.type === "assistant/message" ? event.data.message : null,
   };
 }
