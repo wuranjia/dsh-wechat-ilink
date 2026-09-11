@@ -6,6 +6,8 @@ import type { Context } from "@deepseek-ai/cordis";
 import { brandString } from "@deepseek-ai/dsh-brand";
 import { boundContextSummary, createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { SessionEvent, SessionId } from "@deepseek-ai/dsh-session";
+import type { AskUserQuestionAnswer, AskUserQuestionRequest } from "@deepseek-ai/dsh-user-questions";
+import { formatQuestionForWeChat, parseWeChatAnswer } from "./ask.js";
 import { extractTurnReply, truncateForWeChat, type ReplySession } from "./reply.js";
 import type { BridgeStore } from "./store.js";
 
@@ -61,6 +63,13 @@ interface LiveEntry {
   lastActiveMs: number;
 }
 
+interface PendingQuestion {
+  questions: AskUserQuestionRequest["questions"];
+  resolve: (answer: AskUserQuestionAnswer) => void;
+  reject: (error: unknown) => void;
+  detachSignal: () => void;
+}
+
 const UNSUPPORTED_TYPE_REPLY = "（v1 仅支持文本消息）";
 const NO_TEXT_REPLY = "（任务已完成，无文本回复）";
 const FAILED_NO_TEXT_REPLY = "（本回合处理失败，未产生回复；可重发消息重试）";
@@ -70,6 +79,7 @@ export class WeChatBridge {
   private readonly live = new Map<string, LiveEntry>();
   private readonly sessionOwners = new Map<string, string>();
   private readonly inflight = new Map<string, Promise<LiveEntry>>();
+  private readonly pendingQuestions = new Map<string, PendingQuestion>();
   private disposed = false;
 
   constructor(
@@ -87,6 +97,15 @@ export class WeChatBridge {
       // user id for the allowlist, and an unknown contact messaging the bot is a
       // security-relevant signal worth surfacing at the default log level.
       this.ctx.logger.info(`wechat-ilink: ignored message from non-allowlisted user ${JSON.stringify(userId)} (add it to allowUsers to accept)`);
+      return;
+    }
+    const pending = this.pendingQuestions.get(userId);
+    if (pending !== undefined) {
+      if (type !== "text" || text.trim() === "") {
+        await this.sender.send(userId, UNSUPPORTED_TYPE_REPLY);
+        return;
+      }
+      pending.resolve(parseWeChatAnswer(text, pending.questions));
       return;
     }
     if (type !== "text" || text.trim() === "") {
@@ -133,6 +152,64 @@ export class WeChatBridge {
       .catch((error) => this.replyFailed(userId, error));
   }
 
+  /**
+   * Claim a user-questions request for a WeChat-owned agent: send the
+   * question to WeChat and wait for the user's reply. Returns undefined when
+   * the request does not belong to a WeChat session (the caller should
+   * delegate to the next answerer).
+   */
+  tryClaimQuestion(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> | undefined {
+    if (request.agent === undefined) return undefined;
+    const userId = this.sessionOwners.get(request.agent.session.header.id);
+    if (userId === undefined) return undefined;
+    return this.claimUserQuestion(userId, request);
+  }
+
+  private claimUserQuestion(userId: string, request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> {
+    this.supersedePending(userId);
+    return new Promise<AskUserQuestionAnswer>((resolve, reject) => {
+      const settle = (detach: boolean) => {
+        const pending = this.pendingQuestions.get(userId);
+        if (pending === undefined) return;
+        this.pendingQuestions.delete(userId);
+        if (detach) pending.detachSignal();
+      };
+      const onAbort = () => {
+        settle(true);
+        reject(new Error("ask aborted"));
+        void this.sender.send(userId, "（问题已取消）").catch(() => {});
+      };
+      request.signal?.addEventListener("abort", onAbort, { once: true });
+      const pending: PendingQuestion = {
+        questions: request.questions,
+        resolve: (answer) => {
+          settle(true);
+          resolve(answer);
+        },
+        reject: (error) => {
+          settle(true);
+          reject(error);
+        },
+        detachSignal: () => {
+          request.signal?.removeEventListener("abort", onAbort);
+        },
+      };
+      this.pendingQuestions.set(userId, pending);
+      this.sender.send(userId, formatQuestionForWeChat(request)).catch((error) => {
+        pending.reject(error);
+      });
+    });
+  }
+
+  /** Reject a still-pending question for this user (a new one supersedes it). */
+  private supersedePending(userId: string): void {
+    const pending = this.pendingQuestions.get(userId);
+    if (pending === undefined) return;
+    this.pendingQuestions.delete(userId);
+    pending.detachSignal();
+    pending.reject(new Error("superseded by a new question"));
+  }
+
   /** Dispose agents idle beyond the timeout; the next message starts a new session. */
   async sweepIdle(now = Date.now()): Promise<void> {
     for (const [userId, entry] of [...this.live]) {
@@ -156,6 +233,11 @@ export class WeChatBridge {
 
   /** Stop everything (plugin unload); drains in-flight creates first. Store entries are kept so sessions resume on the next start. */
   async dispose(): Promise<void> {
+    for (const [userId, pending] of [...this.pendingQuestions]) {
+      this.pendingQuestions.delete(userId);
+      pending.detachSignal();
+      pending.reject(new Error("bridge disposed"));
+    }
     this.disposed = true;
     await Promise.allSettled([...this.inflight.values()]);
     for (const [userId, entry] of [...this.live]) {
@@ -171,6 +253,13 @@ export class WeChatBridge {
   private forget(userId: string, entry: LiveEntry): void {
     this.live.delete(userId);
     this.sessionOwners.delete(entry.sessionId);
+    // defensive: the ask signal aborts on agent disposal; clear any pending question too
+    const pending = this.pendingQuestions.get(userId);
+    if (pending !== undefined) {
+      this.pendingQuestions.delete(userId);
+      pending.detachSignal();
+      pending.reject(new Error("session swept"));
+    }
   }
 
   private replyFailed(userId: string, error: unknown): void {

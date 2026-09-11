@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionSeq, type SessionEvent, type TurnEndReason } from "@deepseek-ai/dsh-session";
+import type { AskUserQuestionRequest } from "@deepseek-ai/dsh-user-questions";
 import { WeChatBridge } from "../src/bridge.js";
 import { JsonFileBridgeStore } from "../src/store.js";
 import { assistantEvent, bridgeConfig, fakeSession, makeFakeWorld, type FakeHandle, type FakeWorld } from "./helpers.js";
@@ -17,6 +18,17 @@ beforeEach(async () => {
   store = new JsonFileBridgeStore(join(workspaceRoot, "state.json"));
   await store.load();
 });
+
+function askRequest(overrides: { signal?: AbortSignal } = {}): AskUserQuestionRequest {
+  return {
+    questions: [{
+      id: "q1",
+      question: "用哪种方式？",
+      options: [{ label: "方案甲" }, { label: "方案乙" }],
+    }],
+    ...overrides,
+  };
+}
 
 describe("WeChatBridge.handleMessage (gating)", () => {
   it("ignores messages from non-allowlisted users", async () => {
@@ -378,5 +390,88 @@ describe("WeChatBridge idle sweeping and disposal", () => {
     await bridge.handleMessage("u1@im.wechat", "text", "你好");
     await bridge.dispose();
     expect(await store.get("u1@im.wechat")).toBeDefined();
+  });
+});
+
+describe("WeChatBridge user-question claiming", () => {
+  async function bridgeWithLiveAgent(): Promise<{ bridge: WeChatBridge; agent: unknown }> {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    const created = (await world.create.mock.results[0].value) as { agent: unknown };
+    return { bridge, agent: created.agent };
+  }
+
+  it("returns undefined for agentless requests", async () => {
+    const { bridge } = await bridgeWithLiveAgent();
+    expect(bridge.tryClaimQuestion(askRequest())).toBeUndefined();
+  });
+
+  it("returns undefined for agents outside WeChat sessions", async () => {
+    const { bridge } = await bridgeWithLiveAgent();
+    const foreign = { session: { header: { id: "other-session" } } } as never;
+    expect(bridge.tryClaimQuestion({ ...askRequest(), agent: foreign })).toBeUndefined();
+  });
+
+  it("sends the formatted question to WeChat and resolves on the user's reply", async () => {
+    const { bridge, agent } = await bridgeWithLiveAgent();
+    const claimed = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never });
+    expect(claimed).toBeDefined();
+    await Promise.resolve();
+    expect(world.sender.send).toHaveBeenCalledWith("u1@im.wechat", expect.stringContaining("用哪种方式？"));
+    // the user answers with the option number
+    await bridge.handleMessage("u1@im.wechat", "text", "1");
+    const answer = await claimed!;
+    expect(answer.answers[0]).toEqual({ id: "q1", selected: ["方案甲"], custom: undefined });
+    // the reply was consumed as the answer, not a followup
+    const created = (await world.create.mock.results[0].value) as { agent: { followup: ReturnType<typeof vi.fn> } };
+    expect(created.agent.followup).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the question pending through a non-text reply", async () => {
+    const { bridge, agent } = await bridgeWithLiveAgent();
+    const claimed = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never });
+    await bridge.handleMessage("u1@im.wechat", "image", "[image]");
+    expect(world.sender.send).toHaveBeenCalledWith("u1@im.wechat", "（v1 仅支持文本消息）");
+    await bridge.handleMessage("u1@im.wechat", "text", "方案乙");
+    const answer = await claimed!;
+    expect(answer.answers[0].selected).toEqual(["方案乙"]);
+  });
+
+  it("frees the reply path after the question settles", async () => {
+    const { bridge, agent } = await bridgeWithLiveAgent();
+    const claimed = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never });
+    await bridge.handleMessage("u1@im.wechat", "text", "1");
+    await claimed;
+    await bridge.handleMessage("u1@im.wechat", "text", "新指令");
+    const created = (await world.create.mock.results[0].value) as { agent: { followup: ReturnType<typeof vi.fn> } };
+    expect(created.agent.followup).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects and notifies WeChat when the ask is aborted", async () => {
+    const { bridge, agent } = await bridgeWithLiveAgent();
+    const controller = new AbortController();
+    const claimed = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never, signal: controller.signal });
+    controller.abort();
+    await expect(claimed).rejects.toThrow();
+    await Promise.resolve();
+    expect(world.sender.send).toHaveBeenCalledWith("u1@im.wechat", "（问题已取消）");
+    // the reply path is free again
+    await bridge.handleMessage("u1@im.wechat", "text", "新指令");
+    const created = (await world.create.mock.results[0].value) as { agent: { followup: ReturnType<typeof vi.fn> } };
+    expect(created.agent.followup).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects the pending question when the bridge disposes", async () => {
+    const { bridge, agent } = await bridgeWithLiveAgent();
+    const claimed = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never });
+    await bridge.dispose();
+    await expect(claimed).rejects.toThrow();
+  });
+
+  it("rejects when the initial question send fails", async () => {
+    const { bridge, agent } = await bridgeWithLiveAgent();
+    world.sender.send.mockRejectedValueOnce(new Error("network down"));
+    const claimed = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never });
+    await expect(claimed).rejects.toThrow("network down");
   });
 });
