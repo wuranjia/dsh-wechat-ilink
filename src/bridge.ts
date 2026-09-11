@@ -126,6 +126,38 @@ export class WeChatBridge {
       .catch((error) => this.replyFailed(userId, error));
   }
 
+  /** Dispose agents idle beyond the timeout; the next message starts a new session. */
+  async sweepIdle(now = Date.now()): Promise<void> {
+    for (const [userId, entry] of [...this.live]) {
+      if (now - entry.lastActiveMs < this.config.sessionIdleTimeoutMs) continue;
+      this.forget(userId, entry);
+      await this.store.delete(userId);
+      try {
+        await entry.handle.dispose();
+      } catch (error) {
+        this.ctx.logger.warn(`wechat-ilink: disposing idle agent for ${JSON.stringify(userId)} failed: ${String(error)}`);
+      }
+    }
+  }
+
+  /** Stop everything (plugin unload); drains in-flight creates first. */
+  async dispose(): Promise<void> {
+    await Promise.allSettled([...this.inflight.values()]);
+    for (const [userId, entry] of [...this.live]) {
+      this.forget(userId, entry);
+      try {
+        await entry.handle.dispose();
+      } catch {
+        // best effort during teardown
+      }
+    }
+  }
+
+  private forget(userId: string, entry: LiveEntry): void {
+    this.live.delete(userId);
+    this.sessionOwners.delete(entry.sessionId);
+  }
+
   private replyFailed(userId: string, error: unknown): void {
     this.ctx.logger.warn(`wechat-ilink: reply to ${JSON.stringify(userId)} failed: ${String(error)}`);
   }
@@ -181,9 +213,18 @@ export class WeChatBridge {
         await this.ctx.agentPresets.mount(agentCtx, preset.id);
       },
     });
-    await workspace.attachSession(sessionId);
-    this.ctx.permissionPresets.set(handle.agent.session, this.config.permissionPreset);
-    this.ctx.sessionTitle.rename(handle.agent.session, `WeChat ${sanitizeUserId(userId)}`);
+    try {
+      await workspace.attachSession(sessionId);
+      this.ctx.permissionPresets.set(handle.agent.session, this.config.permissionPreset);
+      this.ctx.sessionTitle.rename(handle.agent.session, `WeChat ${sanitizeUserId(userId)}`);
+    } catch (error) {
+      try {
+        await handle.dispose();
+      } catch {
+        // best effort rollback
+      }
+      throw error;
+    }
     return this.remember(userId, handle, sessionId);
   }
 

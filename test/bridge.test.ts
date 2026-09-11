@@ -274,3 +274,52 @@ describe("WeChatBridge.onSessionEvent (reply routing)", () => {
     expect(world.sender.send).not.toHaveBeenCalled();
   });
 });
+
+describe("WeChatBridge idle sweeping and disposal", () => {
+  it("disposes agents idle beyond the timeout and clears the store", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    const created = (await world.create.mock.results[0].value) as { dispose: ReturnType<typeof vi.fn> };
+    await bridge.sweepIdle(Date.now() + 1_900_000);
+    expect(created.dispose).toHaveBeenCalledTimes(1);
+    expect(await store.get("u1@im.wechat")).toBeUndefined();
+    // the next message creates a fresh session
+    await bridge.handleMessage("u1@im.wechat", "text", "再来");
+    expect(world.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps agents active within the timeout", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    const created = (await world.create.mock.results[0].value) as { dispose: ReturnType<typeof vi.fn> };
+    await bridge.sweepIdle(Date.now() + 60_000);
+    expect(created.dispose).not.toHaveBeenCalled();
+    expect(await store.get("u1@im.wechat")).toBeDefined();
+  });
+
+  it("dispose() tears down every live agent", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    const created = (await world.create.mock.results[0].value) as { dispose: ReturnType<typeof vi.fn> };
+    await bridge.dispose();
+    expect(created.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispose() waits for an in-flight create and tears it down too", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    const handling = bridge.handleMessage("u1@im.wechat", "text", "你好");
+    await bridge.dispose();
+    await handling;
+    const created = (await world.create.mock.results[0].value) as { dispose: ReturnType<typeof vi.fn> };
+    expect(created.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("disposes the handle when a post-create step throws", async () => {
+    world.attachSession.mockRejectedValueOnce(new Error("attach failed"));
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    const created = (await world.create.mock.results[0].value) as { dispose: ReturnType<typeof vi.fn> };
+    expect(created.dispose).toHaveBeenCalledTimes(1);
+    expect(world.sender.send).toHaveBeenCalledWith("u1@im.wechat", expect.stringContaining("处理失败"));
+  });
+});
