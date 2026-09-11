@@ -196,6 +196,7 @@ export class WeChatBridge {
       };
       this.pendingQuestions.set(userId, pending);
       this.sender.send(userId, formatQuestionForWeChat(request)).catch((error) => {
+        if (this.pendingQuestions.get(userId) !== pending) return; // superseded while in flight
         pending.reject(error);
       });
     });

@@ -474,4 +474,29 @@ describe("WeChatBridge user-question claiming", () => {
     const claimed = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never });
     await expect(claimed).rejects.toThrow("network down");
   });
+
+  it("does not let a superseded question's late send failure strand the new one", async () => {
+    const { bridge, agent } = await bridgeWithLiveAgent();
+    // question #1: its send will fail — but only after #2 has superseded it
+    let failSend: ((error: Error) => void) | undefined;
+    world.sender.send.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      failSend = reject;
+    }));
+    const first = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never });
+    // question #2 supersedes #1 before #1's send settles
+    const second = bridge.tryClaimQuestion({ ...askRequest(), agent: agent as never });
+    await Promise.resolve();
+    // both question sends were issued (the earlier typing indicator uses sendTyping, not send)
+    expect(world.sender.send).toHaveBeenCalledTimes(2);
+    expect(world.sender.send.mock.calls.at(-1)?.[1]).toContain("用哪种方式？");
+    // now #1's send fails late — it must be ignored, not double-settled onto #2's entry
+    failSend?.(new Error("late failure"));
+    await expect(first).rejects.toThrow("superseded by a new question");
+    // #2 is intact: the user's reply resolves it instead of falling through to followup
+    await bridge.handleMessage("u1@im.wechat", "text", "2");
+    const created = (await world.create.mock.results[0].value) as { agent: { followup: ReturnType<typeof vi.fn> } };
+    expect(created.agent.followup).toHaveBeenCalledTimes(1);
+    const answer = await second!;
+    expect(answer.answers[0].selected).toEqual(["方案乙"]);
+  });
 });
