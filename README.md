@@ -14,11 +14,22 @@ agent 处理完成后把最终回复发回微信。
 
 从 GitHub 安装（推荐）：
 
+**第 1 步**：允许 pnpm 构建本插件（git 依赖靠 `prepare` 脚本构建 `lib/`，
+pnpm 10 默认拦截，需先放行）。编辑 `~/.dsh/profiles/web/pnpm-workspace.yaml`，
+在末尾追加：
+
+```yaml
+onlyBuiltDependencies:
+  - dsh-wechat-ilink
+```
+
+**第 2 步**：安装：
+
 ```sh
 dsh plugin --profile web add github:wuranjia/dsh-wechat-ilink
 ```
 
-或从本地源码安装：
+或从本地源码安装（无需第 1 步，tarball 已含构建产物）：
 
 ```sh
 git clone https://github.com/wuranjia/dsh-wechat-ilink.git
