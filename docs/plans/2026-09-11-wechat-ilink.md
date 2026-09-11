@@ -1478,6 +1478,14 @@ git add -A && git commit -m "feat: iLink SDK wrapper with terminal QR login"
 **Files:**
 - Modify: `src/index.ts`（整体重写）
 - Create: `test/index.test.ts`
+- Modify: `src/bridge.ts`（补 `disposed` 守卫——Task 7 审查遗留：卸载后到达
+  的消息不应再创建无人回收的 agent；`dispose()` 置位，`handleMessage` 开头
+  检查并静默丢弃，配一个测试）
+
+> 本任务附加 bridge 的 disposed 守卫：私有 `disposed = false` 字段；
+> `dispose()` 开头置 `true`；`handleMessage` 在 allowlist 检查之前检查
+> `if (this.disposed) return;`。测试：`dispose()` 后再 `handleMessage` →
+> `create`/`resume`/`send` 均不被调用。
 
 - [ ] **Step 1: 写失败测试 `test/index.test.ts`（Config 默认值与展开逻辑）**
 
