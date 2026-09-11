@@ -1,46 +1,53 @@
 import { describe, expect, it } from "vitest";
 import { extractTurnReply, messageText, truncateForWeChat, type ReplySession } from "../src/reply.js";
-import type { Message } from "@deepseek-ai/dsh-llm";
-import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import { MessageId, ToolCallId, type Message } from "@deepseek-ai/dsh-llm";
+import { SessionSeq, type SessionEvent } from "@deepseek-ai/dsh-session";
 
-function assistantEvent(seq: number, turn: number, text: string): SessionEvent {
+function assistantEvent(
+  seq: number,
+  turn: number,
+  text: string,
+  interrupted?: true,
+): SessionEvent<"assistant/message"> {
   return {
     type: "assistant/message",
-    seq: seq as never,
+    seq: SessionSeq(seq),
     time: 0,
+    surfaceOp: "append",
     data: {
       turn,
       step: 1,
       message: {
-        id: `m${seq}` as never,
+        id: MessageId(`m${seq}`),
         role: "assistant",
         content: text === "" ? [] : [{ type: "text", text }],
         source: { kind: "model", provider: "p", model: "m" },
       },
       stream: [],
+      interrupted,
     },
-  } as never;
+  };
 }
 
-function fakeSession(events: SessionEvent[]): ReplySession {
+function fakeSession(events: readonly SessionEvent[]): ReplySession {
   return {
     snapshotEvents: () => events,
     deriveEventMessage: (event) =>
-      event.type === "assistant/message" ? (event.data.message as Message) : null,
+      event.type === "assistant/message" ? event.data.message : null,
   };
 }
 
 describe("messageText", () => {
   it("joins text blocks and ignores other blocks", () => {
     const message: Message = {
-      id: "m" as never,
-      role: "assistant" as const,
+      id: MessageId("m"),
+      role: "assistant",
       content: [
         { type: "text", text: "hello " },
-        { type: "tool-call", id: "c" as never, name: "t", arguments: "{}" },
+        { type: "tool-call", id: ToolCallId("c"), name: "t", arguments: "{}" },
         { type: "text", text: "world" },
       ],
-      source: { kind: "model" as const, provider: "p", model: "m" },
+      source: { kind: "model", provider: "p", model: "m" },
     };
     expect(messageText(message)).toBe("hello world");
   });
@@ -76,6 +83,28 @@ describe("extractTurnReply", () => {
     const session = fakeSession([assistantEvent(1, 2, "")]);
     expect(extractTurnReply(session, 2)).toBeNull();
   });
+
+  it("skips interrupted messages and falls back to the last complete one", () => {
+    const session = fakeSession([
+      assistantEvent(1, 2, "complete text"),
+      assistantEvent(2, 2, "partial frag", true),
+    ]);
+    expect(extractTurnReply(session, 2)).toBe("complete text");
+  });
+
+  it("returns null when every assistant message in the turn was interrupted", () => {
+    const session = fakeSession([assistantEvent(1, 2, "frag", true)]);
+    expect(extractTurnReply(session, 2)).toBeNull();
+  });
+
+  it("returns null for an empty event log", () => {
+    expect(extractTurnReply(fakeSession([]), 1)).toBeNull();
+  });
+
+  it("treats whitespace-only text as empty", () => {
+    const session = fakeSession([assistantEvent(1, 2, "   ")]);
+    expect(extractTurnReply(session, 2)).toBeNull();
+  });
 });
 
 describe("truncateForWeChat", () => {
@@ -83,11 +112,23 @@ describe("truncateForWeChat", () => {
     expect(truncateForWeChat("短回复", 100)).toBe("短回复");
   });
 
+  it("returns text unchanged at the exact boundary", () => {
+    const text = "x".repeat(100);
+    expect(truncateForWeChat(text, 100)).toBe(text);
+  });
+
   it("truncates long text with a marker", () => {
     const text = "x".repeat(250);
     const result = truncateForWeChat(text, 100);
     expect(result.length).toBeLessThanOrEqual(100 + 30);
     expect(result.startsWith("x".repeat(100))).toBe(true);
+    expect(result).toContain("已截断");
+  });
+
+  it("does not split a surrogate pair when truncating", () => {
+    const result = truncateForWeChat("a".repeat(99) + "😀", 100);
+    // Cutting at 100 units would orphan 😀's high surrogate; back off to 99.
+    expect(result.startsWith("a".repeat(99) + "\n\n")).toBe(true);
     expect(result).toContain("已截断");
   });
 });
