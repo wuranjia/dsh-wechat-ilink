@@ -10,8 +10,32 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepare": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
   },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "deepseek",
+    "cordis",
+    "wechat",
+    "weixin",
+    "ilink",
+    "bot",
+    "agent",
+    "plugin"
+  ],
+  "author": "wuranjia <709641446@qq.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wuranjia/dsh-wechat-ilink.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wuranjia/dsh-wechat-ilink/issues"
+  },
+  "homepage": "https://github.com/wuranjia/dsh-wechat-ilink#readme",
   "dependencies": {
     "@deepseek-ai/dsh-brand": "^0.1.5-rc.1",
     "@deepseek-ai/dsh-llm": "^0.1.5-rc.1",

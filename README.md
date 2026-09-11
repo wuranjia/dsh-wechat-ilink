@@ -12,8 +12,17 @@ agent 处理完成后把最终回复发回微信。
 
 ## 安装
 
+从 GitHub 安装（推荐）：
+
 ```sh
-cd /Users/zym/Documents/20260823/dsh-wechat-ilink
+dsh plugin --profile web add github:wuranjia/dsh-wechat-ilink
+```
+
+或从本地源码安装：
+
+```sh
+git clone https://github.com/wuranjia/dsh-wechat-ilink.git
+cd dsh-wechat-ilink
 pnpm install && pnpm test && pnpm build && pnpm pack
 dsh plugin --profile web add ./dsh-wechat-ilink-0.1.0.tgz
 ```
