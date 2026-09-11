@@ -2,6 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
+import type { Context } from "@deepseek-ai/cordis";
 import type { BridgeConfig, BridgeContext } from "../src/bridge.js";
 
 export interface FakeHandle {
@@ -29,7 +30,14 @@ export interface FakeWorld {
 
 export async function makeFakeWorld(): Promise<{ world: FakeWorld; workspaceRoot: string }> {
   const workspaceRoot = await mkdtemp(join(tmpdir(), "wechat-bridge-ws-"));
-  const create = vi.fn(async (options: { sessionId: string }) => makeFakeHandle(options.sessionId));
+  const create = vi.fn(
+    async (options: { sessionId: string; setup?: (agentCtx: Context, agent: unknown) => unknown }) => {
+      const handle = makeFakeHandle(options.sessionId);
+      // The real agents.create awaits setup before the handle becomes visible.
+      await options.setup?.({} as never, handle.agent);
+      return handle;
+    },
+  );
   const resume = vi.fn(async (options: { resumeSessionId: string }) => makeFakeHandle(options.resumeSessionId));
   const mount = vi.fn(async () => {});
   const permissionSet = vi.fn();

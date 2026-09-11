@@ -27,6 +27,7 @@ export interface BridgeConfig {
 }
 
 /** The DSH services the bridge uses (satisfied by the real plugin Context). */
+// Method syntax is load-bearing: it carries parameter bivariance, which the real Context's branded parameters rely on — do not convert to arrow-function properties.
 export interface BridgeContext {
   agents: {
     create(options: CreateAgentOptions): Promise<AgentHandle>;
@@ -103,9 +104,38 @@ export class WeChatBridge {
     return { provider, model };
   }
 
-  private async ensureAgent(userId: string): Promise<LiveEntry> {
+  private readonly inflight = new Map<string, Promise<LiveEntry>>();
+
+  private ensureAgent(userId: string): Promise<LiveEntry> {
     const existing = this.live.get(userId);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) return Promise.resolve(existing);
+    const pending = this.inflight.get(userId);
+    if (pending !== undefined) return pending;
+    const created = this.createOrResumeAgent(userId).finally(() => {
+      this.inflight.delete(userId);
+    });
+    this.inflight.set(userId, created);
+    return created;
+  }
+
+  private async createOrResumeAgent(userId: string): Promise<LiveEntry> {
+    const stored = await this.store.get(userId);
+    if (stored !== undefined && Date.now() - stored.lastActiveMs < this.config.sessionIdleTimeoutMs) {
+      try {
+        const handle = await this.ctx.agents.resume({
+          resumeSessionId: brandString<SessionId>(stored.sessionId),
+          agentOptions: this.agentOptions(),
+          setup: async (agentCtx: Context) => {
+            await this.ctx.agentPresets.mount(agentCtx, this.config.agentPreset);
+          },
+        });
+        return this.remember(userId, handle, stored.sessionId);
+      } catch (error) {
+        this.ctx.logger.warn(
+          `wechat-ilink: resuming session ${JSON.stringify(stored.sessionId)} failed, creating a new one: ${String(error)}`,
+        );
+      }
+    }
 
     const preset = await this.ctx.agentPresets.resolve(this.config.agentPreset);
     await this.ctx.agentPresets.standingKeyFor(preset.id);

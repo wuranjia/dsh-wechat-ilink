@@ -97,3 +97,69 @@ describe("WeChatBridge.handleMessage (create path)", () => {
     expect(world.sender.send).toHaveBeenCalledWith("u1@im.wechat", expect.stringContaining("处理失败"));
   });
 });
+
+describe("WeChatBridge.handleMessage (resume path)", () => {
+  it("resumes a stored fresh session instead of creating", async () => {
+    await store.set("u1@im.wechat", { sessionId: "wechat-stored", lastActiveMs: Date.now() });
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "继续");
+    expect(world.resume).toHaveBeenCalledTimes(1);
+    expect(world.resume.mock.calls[0][0]).toMatchObject({ resumeSessionId: "wechat-stored" });
+    expect(world.create).not.toHaveBeenCalled();
+    const resumed = (await world.resume.mock.results[0].value) as { agent: { followup: ReturnType<typeof vi.fn> } };
+    expect(resumed.agent.followup).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates a new session when the stored one is idle beyond the timeout", async () => {
+    await store.set("u1@im.wechat", { sessionId: "wechat-stale", lastActiveMs: Date.now() - 2_000_000 });
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "新话题");
+    expect(world.resume).not.toHaveBeenCalled();
+    expect(world.create).toHaveBeenCalledTimes(1);
+    const stored = await store.get("u1@im.wechat");
+    expect(stored!.sessionId).not.toBe("wechat-stale");
+  });
+
+  it("falls back to creating when resume fails", async () => {
+    await store.set("u1@im.wechat", { sessionId: "wechat-broken", lastActiveMs: Date.now() });
+    world.resume.mockRejectedValueOnce(new Error("session gone"));
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    expect(world.resume).toHaveBeenCalledTimes(1);
+    expect(world.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("WeChatBridge concurrency and create-sequence pinning", () => {
+  it("deduplicates concurrent messages from one user into a single create", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await Promise.all([
+      bridge.handleMessage("u1@im.wechat", "text", "一"),
+      bridge.handleMessage("u1@im.wechat", "text", "二"),
+    ]);
+    expect(world.create).toHaveBeenCalledTimes(1);
+    expect(world.attachSession).toHaveBeenCalledTimes(1);
+    const created = (await world.create.mock.results[0].value) as { agent: { followup: ReturnType<typeof vi.fn> } };
+    expect(created.agent.followup).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs the create setup and attaches the session it created", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    expect(world.mount).toHaveBeenCalledTimes(1);
+    const options = world.create.mock.calls[0][0] as { sessionId: string };
+    expect(world.attachSession).toHaveBeenCalledWith(options.sessionId);
+  });
+
+  it("passes an explicit model override into agentOptions", async () => {
+    const bridge = new WeChatBridge(
+      world.ctx,
+      bridgeConfig(workspaceRoot, { model: { provider: "mimo", model: "glm" } }),
+      store,
+      world.sender,
+    );
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    const options = world.create.mock.calls[0][0] as { agentOptions: { provider: string; model: string } };
+    expect(options.agentOptions).toEqual({ provider: "mimo", model: "glm" });
+  });
+});
