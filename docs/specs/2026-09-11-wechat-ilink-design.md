@@ -95,7 +95,7 @@ dsh-wechat-ilink/
         allowUsers: []                   # 必填，微信用户 ID 白名单
         workspaceRoot: '~/Documents/wechat-agent'
         storageDir: '~/.dsh/wechat-ilink'
-        agentPreset: 'default'
+        agentPreset: 'standard'
         permissionPreset: 'wechat-safe'
         sessionIdleTimeoutMs: 1800000    # 30 分钟
         maxReplyChars: 1800
