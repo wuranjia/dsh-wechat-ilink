@@ -64,6 +64,7 @@ describe("formatQuestionForWeChat", () => {
     expect(text).toContain("2/2");
     expect(text).toContain("第二个问题？");
     expect(text).toContain("分号");
+    expect(text).toContain("\n\n[2/2]");
   });
 
   it("marks multi-select questions", () => {
@@ -86,6 +87,23 @@ describe("parseWeChatAnswer", () => {
   it("selects by option number", () => {
     const answer = parseWeChatAnswer("1", [question({ id: "q1" })]);
     expect(answer.answers[0]).toEqual({ id: "q1", selected: ["方案甲"], custom: undefined });
+  });
+
+  it("prefers an exact numeric label over the option number", () => {
+    const item = question({ id: "q1", options: [{ label: "0" }, { label: "1" }, { label: "2" }, { label: "3" }] });
+    const answer = parseWeChatAnswer("3", [item]);
+    expect(answer.answers[0].selected).toEqual(["3"]);
+  });
+
+  it("accepts Chinese full-stop after an option number", () => {
+    const answer = parseWeChatAnswer("1。", [question({ id: "q1" })]);
+    expect(answer.answers[0].selected).toEqual(["方案甲"]);
+  });
+
+  it("rejects scientific notation as an option number", () => {
+    const answer = parseWeChatAnswer("1e0", [question({ id: "q1" })]);
+    expect(answer.answers[0].selected).toEqual([]);
+    expect(answer.answers[0].custom).toBe("1e0");
   });
 
   it("selects by option label text", () => {
@@ -113,12 +131,35 @@ describe("parseWeChatAnswer", () => {
     const item = question({ id: "q1", multiSelect: true });
     const byNumbers = parseWeChatAnswer("1, 2", [item]);
     expect(byNumbers.answers[0].selected).toEqual(["方案甲", "方案乙"]);
+    expect(byNumbers.answers[0].custom).toBeUndefined();
     const byLabels = parseWeChatAnswer("方案甲、方案乙", [item]);
     expect(byLabels.answers[0].selected).toEqual(["方案甲", "方案乙"]);
+    expect(byLabels.answers[0].custom).toBeUndefined();
+  });
+
+  it("keeps unmatched multi-select parts as custom text", () => {
+    const answer = parseWeChatAnswer("1, 都不行", [question({ id: "q1", multiSelect: true })]);
+    expect(answer.answers[0].selected).toEqual(["方案甲"]);
+    expect(answer.answers[0].custom).toBe("都不行");
+  });
+
+  it("deduplicates repeated multi-select selections", () => {
+    const answer = parseWeChatAnswer("1, 1", [question({ id: "q1", multiSelect: true })]);
+    expect(answer.answers[0].selected).toEqual(["方案甲"]);
+    expect(answer.answers[0].custom).toBeUndefined();
   });
 
   it("splits multiple questions by semicolons", () => {
     const answer = parseWeChatAnswer("1；方案乙", [
+      question({ id: "q1", question: "一？" }),
+      question({ id: "q2", question: "二？" }),
+    ]);
+    expect(answer.answers[0].selected).toEqual(["方案甲"]);
+    expect(answer.answers[1].selected).toEqual(["方案乙"]);
+  });
+
+  it("splits batch answers on newlines too", () => {
+    const answer = parseWeChatAnswer("1\n方案乙", [
       question({ id: "q1", question: "一？" }),
       question({ id: "q2", question: "二？" }),
     ]);

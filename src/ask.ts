@@ -49,10 +49,10 @@ export function formatQuestionForWeChat(request: AskUserQuestionRequest): string
   const parts = ["❓"];
   parts.push(...blocks);
   if (total > 1) parts.push(BATCH_HINT);
-  return parts.join("\n");
+  return parts.join("\n\n");
 }
 
-/** Match one reply part against one question's options. */
+/** Parse one question's reply text (a whole reply, or one batch part) into an answer. */
 function answerOne(item: AskUserQuestionItem, reply: string): AskUserQuestionAnswerItem {
   const text = reply.trim();
   if (text === "") return { id: item.id, selected: [] };
@@ -60,30 +60,50 @@ function answerOne(item: AskUserQuestionItem, reply: string): AskUserQuestionAns
     return { id: item.id, selected: [], custom: text };
   }
   const labels = item.options.map((option) => option.label);
-  const matchLabel = (part: string): string | undefined => {
+  // Tier 1 — exact label: a reply equal to a label always means that label, even
+  // when the label is itself a number ("3" selects the label "3", not index 3).
+  const matchExactLabel = (part: string): string | undefined => {
     const trimmed = part.trim();
     if (trimmed === "") return undefined;
-    const exact = labels.find((label) => label === trimmed);
-    if (exact !== undefined) return exact;
+    return labels.find((label) => label === trimmed);
+  };
+  // Tier 2 — option number: digits only after stripping one trailing [.。、],
+  // within 1..options.length. Strict on purpose — Number() would also accept
+  // "1e0", "0x1", "+1", or "1.5" as numbers.
+  const matchOptionNumber = (part: string): string | undefined => {
+    const trimmed = part.trim().replace(/[.。、]$/, "");
+    if (!/^\d+$/.test(trimmed)) return undefined;
+    const numeric = Number(trimmed);
+    if (numeric < 1 || numeric > labels.length) return undefined;
+    return labels[numeric - 1];
+  };
+  // Tiers 3/4 — case-insensitive label equality, then containment.
+  const matchLooseLabel = (part: string): string | undefined => {
+    const trimmed = part.trim();
+    if (trimmed === "") return undefined;
     const lower = trimmed.toLowerCase();
     const insensitive = labels.find((label) => label.toLowerCase() === lower);
     if (insensitive !== undefined) return insensitive;
     return labels.find((label) => label.toLowerCase().includes(lower));
   };
-  const matchPart = (part: string): string | undefined => {
-    const numeric = Number(part.trim());
-    if (Number.isInteger(numeric) && numeric >= 1 && numeric <= labels.length) {
-      return labels[numeric - 1];
-    }
-    return matchLabel(part);
-  };
+  const matchPart = (part: string): string | undefined =>
+    matchExactLabel(part) ?? matchOptionNumber(part) ?? matchLooseLabel(part);
   if (item.multiSelect === true) {
     const selected: string[] = [];
+    const unmatched: string[] = [];
     for (const part of text.split(/[,，、]/)) {
+      const trimmed = part.trim();
+      if (trimmed === "") continue;
       const label = matchPart(part);
-      if (label !== undefined && !selected.includes(label)) selected.push(label);
+      if (label === undefined) unmatched.push(trimmed);
+      else if (!selected.includes(label)) selected.push(label);
     }
-    if (selected.length > 0) return { id: item.id, selected, custom: undefined };
+    // Partial matches keep both halves: matched labels → selected, leftover
+    // text → custom ("1, 随便" must not drop "随便"). Nothing matched → whole text.
+    if (selected.length > 0) {
+      const custom = unmatched.length > 0 ? unmatched.join("；") : undefined;
+      return { id: item.id, selected, custom };
+    }
     return { id: item.id, selected: [], custom: text };
   }
   const label = matchPart(text);
@@ -96,7 +116,7 @@ export function parseWeChatAnswer(reply: string, questions: AskUserQuestionItem[
   if (questions.length === 1) {
     return { answers: [answerOne(questions[0], reply)] };
   }
-  const parts = reply.split(/[;；]/);
+  const parts = reply.split(/[;；\n]/);
   const answers = questions.map((item, index) =>
     answerOne(item, parts[index] ?? ""),
   );
