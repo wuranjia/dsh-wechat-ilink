@@ -1652,6 +1652,18 @@ git add -A && git commit -m "feat: cordis plugin entry wiring iLink bot to bridg
 
 **Files:**
 - Create: `README.md`
+- Modify: `src/index.ts`（Task 9 审查修复）
+- Modify: `src/bridge.ts`（sweepIdle 跳过运行中的 agent）
+- Modify: `test/`（对应测试）
+
+> 本任务先落地 Task 9 质量审查的三个修复：
+> (a) 启动 IIFE 取消标志——effect disposer 置 `active = false`，每个
+> `await` 之后检查，卸载后不再注册 onMessage / 调 bot.start() / 打
+> "bot is running" 日志；(b) `resolveModel()` 纯函数 + 半配置
+> （只填 provider 或只填 model）时 `logger.warn`，配测试；
+> (c) `sweepIdle` 跳过 `agent.status === "running"` 的条目——超过
+> 空闲超时但仍在跑长任务的 agent 不被中途清扫（fake handle 补
+> `status` 字段，测试覆盖）。
 
 - [ ] **Step 1: 写 `README.md`**
 
