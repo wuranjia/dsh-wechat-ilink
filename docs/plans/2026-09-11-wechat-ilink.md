@@ -1100,6 +1100,11 @@ import { assistantEvent, fakeSession } from "./helpers.js";
 （把 Task 3 的 `assistantEvent`/`fakeSession` 从 `test/reply.test.ts` 挪进
 `test/helpers.ts` 导出，两个测试文件共用——移动代码，不是复制。）
 
+> 本任务同时处理 Task 5 质量审查的遗留：(a) fake `resume` 也调用
+> `options.setup` 并在 resume 测试中断言 `agentOptions` 与 `mount`（对称于
+> create 路径）；(b) 整洁性——`inflight` 字段上移与 `live`/`sessionOwners`
+> 放在一起，bivariance 注释并入 `BridgeContext` 的 doc comment。
+
 ```ts
 describe("WeChatBridge.onSessionEvent (reply routing)", () => {
   async function bridgeWithLiveUser(): Promise<{ bridge: WeChatBridge; sessionId: string }> {
@@ -1258,13 +1263,31 @@ describe("WeChatBridge idle sweeping and disposal", () => {
     await bridge.dispose();
     expect(created.dispose).toHaveBeenCalledTimes(1);
   });
+
+  it("dispose() waits for an in-flight create and tears it down too", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    const handling = bridge.handleMessage("u1@im.wechat", "text", "你好");
+    await bridge.dispose();
+    await handling;
+    const created = (await world.create.mock.results[0].value) as { dispose: ReturnType<typeof vi.fn> };
+    expect(created.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("disposes the handle when a post-create step throws", async () => {
+    world.attachSession.mockRejectedValueOnce(new Error("attach failed"));
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    const created = (await world.create.mock.results[0].value) as { dispose: ReturnType<typeof vi.fn> };
+    expect(created.dispose).toHaveBeenCalledTimes(1);
+    expect(world.sender.send).toHaveBeenCalledWith("u1@im.wechat", expect.stringContaining("处理失败"));
+  });
 });
 ```
 
 - [ ] **Step 2: 运行确认失败**
 
 Run: `pnpm test`
-Expected: 新增 3 个用例 FAIL（方法不存在）。
+Expected: 新增 5 个用例 FAIL（方法不存在）。
 
 - [ ] **Step 3: 在 `WeChatBridge` 类中实现（放在 `onSessionEvent` 之后）**
 
@@ -1283,8 +1306,9 @@ Expected: 新增 3 个用例 FAIL（方法不存在）。
     }
   }
 
-  /** Stop everything (plugin unload). */
+  /** Stop everything (plugin unload); drains in-flight creates first. */
   async dispose(): Promise<void> {
+    await Promise.allSettled([...this.inflight.values()]);
     for (const [userId, entry] of [...this.live]) {
       this.forget(userId, entry);
       try {
@@ -1299,6 +1323,27 @@ Expected: 新增 3 个用例 FAIL（方法不存在）。
     this.live.delete(userId);
     this.sessionOwners.delete(entry.sessionId);
   }
+```
+
+create 分支的容错：`agents.create` 成功后、`remember` 之前的任何一步抛出
+（attachSession/permissionPresets.set/sessionTitle.rename）都要 dispose 已建
+handle 再重抛——用 try/catch 包住 create 之后的步骤：
+
+```ts
+    const handle = await this.ctx.agents.create({ /* …原样… */ });
+    try {
+      await workspace.attachSession(sessionId);
+      this.ctx.permissionPresets.set(handle.agent.session, this.config.permissionPreset);
+      this.ctx.sessionTitle.rename(handle.agent.session, `WeChat ${sanitizeUserId(userId)}`);
+    } catch (error) {
+      try {
+        await handle.dispose();
+      } catch {
+        // best effort rollback
+      }
+      throw error;
+    }
+    return this.remember(userId, handle, sessionId);
 ```
 
 - [ ] **Step 4: 运行测试通过**
