@@ -570,7 +570,7 @@ export function truncateForWeChat(text: string, maxChars: number): string {
 - [ ] **Step 4: 运行测试通过**
 
 Run: `pnpm test`
-Expected: 全部 passed（store 6 + reply 7）。
+Expected: 全部 passed（store 6 + reply 13）。
 
 - [ ] **Step 5: Commit**
 
