@@ -131,7 +131,11 @@ export class WeChatBridge {
     for (const [userId, entry] of [...this.live]) {
       if (now - entry.lastActiveMs < this.config.sessionIdleTimeoutMs) continue;
       this.forget(userId, entry);
-      await this.store.delete(userId);
+      try {
+        await this.store.delete(userId);
+      } catch (error) {
+        this.ctx.logger.warn(`wechat-ilink: deleting stored session for ${JSON.stringify(userId)} failed: ${String(error)}`);
+      }
       try {
         await entry.handle.dispose();
       } catch (error) {
@@ -140,7 +144,7 @@ export class WeChatBridge {
     }
   }
 
-  /** Stop everything (plugin unload); drains in-flight creates first. */
+  /** Stop everything (plugin unload); drains in-flight creates first. Store entries are kept so sessions resume on the next start. */
   async dispose(): Promise<void> {
     await Promise.allSettled([...this.inflight.values()]);
     for (const [userId, entry] of [...this.live]) {

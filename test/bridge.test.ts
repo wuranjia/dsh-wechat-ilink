@@ -322,4 +322,40 @@ describe("WeChatBridge idle sweeping and disposal", () => {
     expect(created.dispose).toHaveBeenCalledTimes(1);
     expect(world.sender.send).toHaveBeenCalledWith("u1@im.wechat", expect.stringContaining("处理失败"));
   });
+
+  it("continues sweeping when one user's store delete fails, and still disposes that handle", async () => {
+    const bridge = new WeChatBridge(
+      world.ctx,
+      bridgeConfig(workspaceRoot, { allowUsers: new Set(["u1@im.wechat", "u2@im.wechat"]) }),
+      store,
+      world.sender,
+    );
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    await bridge.handleMessage("u2@im.wechat", "text", "你好");
+    const first = (await world.create.mock.results[0].value) as { dispose: ReturnType<typeof vi.fn> };
+    const second = (await world.create.mock.results[1].value) as { dispose: ReturnType<typeof vi.fn> };
+    // make the FIRST store delete reject (JsonFileBridgeStore persists the whole map; use vi.spyOn on store.delete for the first call)
+    const deleteSpy = vi.spyOn(store, "delete").mockRejectedValueOnce(new Error("disk full"));
+    await bridge.sweepIdle(Date.now() + 1_900_000);
+    expect(first.dispose).toHaveBeenCalledTimes(1);
+    expect(second.dispose).toHaveBeenCalledTimes(1);
+    expect(deleteSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns and continues when an idle handle fails to dispose", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    const created = (await world.create.mock.results[0].value) as { dispose: ReturnType<typeof vi.fn> };
+    created.dispose.mockRejectedValueOnce(new Error("dispose boom"));
+    await bridge.sweepIdle(Date.now() + 1_900_000);
+    expect(created.dispose).toHaveBeenCalledTimes(1);
+    expect(await store.get("u1@im.wechat")).toBeUndefined();
+  });
+
+  it("dispose() keeps store entries so sessions can resume on restart", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    await bridge.dispose();
+    expect(await store.get("u1@im.wechat")).toBeDefined();
+  });
 });
