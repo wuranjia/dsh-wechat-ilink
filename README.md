@@ -35,7 +35,7 @@ dsh plugin --profile web add github:wuranjia/dsh-wechat-ilink
 git clone https://github.com/wuranjia/dsh-wechat-ilink.git
 cd dsh-wechat-ilink
 pnpm install && pnpm test && pnpm build && pnpm pack
-dsh plugin --profile web add ./dsh-wechat-ilink-0.1.0.tgz
+dsh plugin --profile web add ./dsh-wechat-ilink-0.2.0.tgz
 ```
 
 然后编辑 `~/.dsh/profiles/web/cordis.patch.yml`：
@@ -62,6 +62,7 @@ dsh plugin --profile web add ./dsh-wechat-ilink-0.1.0.tgz
         permissionPreset: 'wechat-safe'
         sessionIdleTimeoutMs: 1800000
         maxReplyChars: 1800
+        # askMode: 'wechat'        # wechat=问题转发微信 / auto=自动决定 / web=留在 GUI
         # logLevel: 'info'          # SDK 自身日志级别（debug/info/warn/error/silent）
         # model: { provider: 'mimo', model: 'glm_5p2_reasoner_test' }  # 可选
 ```
@@ -83,6 +84,15 @@ dsh --profile web --dump-config
 3. 白名单内用户发消息，agent 处理后回复到达微信；Web GUI 侧栏里可见标题为
    `WeChat <用户ID>`（用户 ID 中非 `[A-Za-z0-9_-]` 字符替换为 `_`）的会话。
    插件日志（含二维码、忽略消息提示）输出在启动 `dsh web` 的那个终端。
+
+## ask 互动模式（v0.2.0）
+
+Agent 需要向你确认决策时（`ask_user_question`，包括计划审批），问题会转发到
+微信：回复数字、选项文字或任意内容即可作答。`askMode` 配置三种模式：
+
+- `wechat`（默认）：问题转发微信，你的回复就是答案
+- `auto`：Agent 问了也白问——自动回「由你自行决定」，永不等待
+- `web`：保持原状，问题留在 Web GUI（微信侧无人感知）
 
 ## 已知限制
 

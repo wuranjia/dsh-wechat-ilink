@@ -10,6 +10,10 @@ import type {} from "@deepseek-ai/dsh-agent-presets";
 import type {} from "@deepseek-ai/dsh-permission-presets";
 import type {} from "@deepseek-ai/dsh-session-title";
 import type {} from "@deepseek-ai/dsh-workspace";
+// Type-only: also activates the 'user-questions/request' event augmentation
+// (the cordis waterfall signature below depends on it).
+import type { AskUserQuestionAnswer, AskUserQuestionRequest } from "@deepseek-ai/dsh-user-questions";
+import { autoAnswer } from "./ask.js";
 import { WeChatBridge } from "./bridge.js";
 import { createIlinkBot } from "./ilink.js";
 import { JsonFileBridgeStore } from "./store.js";
@@ -36,6 +40,8 @@ export const Config = z.object({
   sessionIdleTimeoutMs: z.number().step(1).min(60_000).default(1_800_000),
   maxReplyChars: z.number().step(1).min(100).default(1800),
   logLevel: z.union(["debug", "info", "warn", "error", "silent"]).default("info"),
+  /** How ask_user_question reaches the user for WeChat sessions: relay to WeChat, auto-decide, or leave to the Web GUI. */
+  askMode: z.union(["wechat", "auto", "web"]).default("wechat"),
   model: z.object({
     provider: z.string().default(""),
     model: z.string().default(""),
@@ -51,6 +57,7 @@ export interface PluginConfig {
   sessionIdleTimeoutMs: number;
   maxReplyChars: number;
   logLevel: "debug" | "info" | "warn" | "error" | "silent";
+  askMode: "wechat" | "auto" | "web";
   model: { provider: string; model: string };
 }
 
@@ -98,6 +105,17 @@ export function apply(ctx: Context, config: PluginConfig): void {
   });
 
   ctx.on("session/event", (session, event) => bridge.onSessionEvent(session, event));
+
+  if (config.askMode !== "web") {
+    ctx.on("user-questions/request", (request, next) => {
+      if (config.askMode === "auto" && request.agent !== undefined
+        && bridge.ownsAgentSession(request.agent)) {
+        return Promise.resolve(autoAnswer(request.questions));
+      }
+      const claimed = bridge.tryClaimQuestion(request);
+      return claimed === undefined ? next() : claimed;
+    }, { prepend: true });
+  }
 
   ctx.effect(() => {
     let active = true;

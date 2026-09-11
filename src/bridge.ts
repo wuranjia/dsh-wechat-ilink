@@ -159,6 +159,11 @@ export class WeChatBridge {
       .catch((error) => this.replyFailed(userId, error));
   }
 
+  /** Whether this live agent belongs to a WeChat-owned session. */
+  ownsAgentSession(agent: { session: { header: { id: string } } }): boolean {
+    return this.sessionOwners.has(agent.session.header.id);
+  }
+
   /**
    * Claim a user-questions request for a WeChat-owned agent: send the
    * question to WeChat and wait for the user's reply. Returns undefined when

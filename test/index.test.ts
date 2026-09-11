@@ -42,3 +42,21 @@ describe("resolveModel", () => {
     expect(warn).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("Config askMode", () => {
+  it("defaults askMode to wechat", () => {
+    const resolved = Config({ allowUsers: ["u1"] }) as Record<string, unknown>;
+    expect(resolved.askMode).toBe("wechat");
+  });
+
+  it("accepts auto and web", () => {
+    expect((Config({ allowUsers: ["u1"], askMode: "auto" }) as Record<string, unknown>).askMode).toBe("auto");
+    expect((Config({ allowUsers: ["u1"], askMode: "web" }) as Record<string, unknown>).askMode).toBe("web");
+  });
+
+  it("rejects an unknown askMode", () => {
+    // "always" is deliberately outside the compile-time union; `as never` keeps
+    // this a runtime-validation test of the schemastery union.
+    expect(() => Config({ allowUsers: ["u1"], askMode: "always" as never })).toThrow();
+  });
+});

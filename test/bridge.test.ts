@@ -533,4 +533,11 @@ describe("WeChatBridge user-question claiming", () => {
     const answer = await second!;
     expect(answer.answers[0].selected).toEqual(["方案乙"]);
   });
+
+  it("reports whether an agent belongs to a WeChat session", async () => {
+    const { bridge, agent } = await bridgeWithLiveAgent();
+    expect(bridge.ownsAgentSession(agent as never)).toBe(true);
+    const foreign = { session: { header: { id: "other-session" } } } as never;
+    expect(bridge.ownsAgentSession(foreign)).toBe(false);
+  });
 });
