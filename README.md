@@ -42,6 +42,7 @@ dsh plugin --profile web add ./dsh-wechat-ilink-0.1.0.tgz
         permissionPreset: 'wechat-safe'
         sessionIdleTimeoutMs: 1800000
         maxReplyChars: 1800
+        # logLevel: 'info'          # SDK 自身日志级别（debug/info/warn/error/silent）
         # model: { provider: 'mimo', model: 'glm_5p2_reasoner_test' }  # 可选
 ```
 

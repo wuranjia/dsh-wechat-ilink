@@ -120,7 +120,7 @@ dsh-wechat-ilink/
 
 | 情形 | 行为 |
 |---|---|
-| 非白名单用户 | 忽略，不回复，logger.debug |
+| 非白名单用户 | 忽略，不回复，logger.info（实现修正：debug 会被默认日志级别过滤，而该行是发现 userId 的唯一途径） |
 | agent create/resume 失败 | `bot.send(userId)` 错误提示文案 |
 | turn 结束但无非空 assistant 文本 | 回复固定提示（如"任务已完成（无文本回复）"） |
 | 回复超长 | 截断到 maxReplyChars，末尾附"（已截断）" |
