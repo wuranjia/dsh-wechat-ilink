@@ -9,13 +9,17 @@ import type { BridgeConfig, BridgeContext } from "../src/bridge.js";
 import type { ReplySession } from "../src/reply.js";
 
 export interface FakeHandle {
-  agent: { session: { header: { id: string } }; followup: ReturnType<typeof vi.fn> };
+  agent: {
+    session: { header: { id: string } };
+    followup: ReturnType<typeof vi.fn>;
+    status: "idle" | "running";
+  };
   dispose: ReturnType<typeof vi.fn>;
 }
 
 export function makeFakeHandle(sessionId: string): FakeHandle {
   return {
-    agent: { session: { header: { id: sessionId } }, followup: vi.fn() },
+    agent: { session: { header: { id: sessionId } }, followup: vi.fn(), status: "idle" },
     dispose: vi.fn(async () => {}),
   };
 }

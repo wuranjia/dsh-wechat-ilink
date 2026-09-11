@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { Config } from "../src/index.js";
+import { describe, expect, it, vi } from "vitest";
+import { Config, resolveModel } from "../src/index.js";
 
 describe("Config", () => {
   it("applies documented defaults for a minimal config", () => {
@@ -20,5 +20,25 @@ describe("Config", () => {
 
   it("rejects an out-of-range timeout", () => {
     expect(() => Config({ allowUsers: ["u1"], sessionIdleTimeoutMs: 1 })).toThrow();
+  });
+});
+
+describe("resolveModel", () => {
+  it("returns the explicit route when both fields are set", () => {
+    expect(resolveModel({ provider: "mimo", model: "glm" }, vi.fn())).toEqual({ provider: "mimo", model: "glm" });
+  });
+
+  it("returns undefined when neither field is set, without warning", () => {
+    const warn = vi.fn();
+    expect(resolveModel({ provider: "", model: "" }, warn)).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("returns undefined with a warning when only one field is set", () => {
+    const warn = vi.fn();
+    expect(resolveModel({ provider: "mimo", model: "" }, warn)).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(resolveModel({ provider: "", model: "glm" }, warn)).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 });

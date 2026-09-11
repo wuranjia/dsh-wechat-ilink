@@ -134,6 +134,9 @@ export class WeChatBridge {
   async sweepIdle(now = Date.now()): Promise<void> {
     for (const [userId, entry] of [...this.live]) {
       if (now - entry.lastActiveMs < this.config.sessionIdleTimeoutMs) continue;
+      // A turn outlasting the idle timeout must not be disposed mid-flight;
+      // the next sweep after it goes idle will collect it.
+      if (entry.handle.agent.status === "running") continue;
       this.forget(userId, entry);
       try {
         await this.store.delete(userId);

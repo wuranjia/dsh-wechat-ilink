@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionSeq, type SessionEvent, type TurnEndReason } from "@deepseek-ai/dsh-session";
 import { WeChatBridge } from "../src/bridge.js";
 import { JsonFileBridgeStore } from "../src/store.js";
-import { assistantEvent, bridgeConfig, fakeSession, makeFakeWorld, type FakeWorld } from "./helpers.js";
+import { assistantEvent, bridgeConfig, fakeSession, makeFakeWorld, type FakeHandle, type FakeWorld } from "./helpers.js";
 
 let world: FakeWorld;
 let workspaceRoot: string;
@@ -293,6 +293,16 @@ describe("WeChatBridge idle sweeping and disposal", () => {
     await bridge.handleMessage("u1@im.wechat", "text", "你好");
     const created = (await world.create.mock.results[0].value) as { dispose: ReturnType<typeof vi.fn> };
     await bridge.sweepIdle(Date.now() + 60_000);
+    expect(created.dispose).not.toHaveBeenCalled();
+    expect(await store.get("u1@im.wechat")).toBeDefined();
+  });
+
+  it("skips agents that are still running a turn, even when idle-expired", async () => {
+    const bridge = new WeChatBridge(world.ctx, bridgeConfig(workspaceRoot), store, world.sender);
+    await bridge.handleMessage("u1@im.wechat", "text", "你好");
+    const created = (await world.create.mock.results[0].value) as FakeHandle;
+    created.agent.status = "running";
+    await bridge.sweepIdle(Date.now() + 1_900_000);
     expect(created.dispose).not.toHaveBeenCalled();
     expect(await store.get("u1@im.wechat")).toBeDefined();
   });

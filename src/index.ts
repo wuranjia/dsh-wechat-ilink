@@ -60,12 +60,22 @@ function expandHome(path: string): string {
   return path;
 }
 
+/** Decode the nested model config: both fields set → explicit route; neither → undefined; half-set → undefined with a warning. */
+export function resolveModel(
+  model: { provider: string; model: string },
+  warn: (message: string) => void,
+): { provider: string; model: string } | undefined {
+  if (model.provider !== "" && model.model !== "") return { provider: model.provider, model: model.model };
+  if (model.provider !== "" || model.model !== "") {
+    warn("wechat-ilink: config model is half-set (provider/model); falling back to the deployment's current model selection");
+  }
+  return undefined;
+}
+
 export function apply(ctx: Context, config: PluginConfig): void {
   const storageDir = expandHome(config.storageDir);
   const workspaceRoot = expandHome(config.workspaceRoot);
-  const model = config.model.provider !== "" && config.model.model !== ""
-    ? { provider: config.model.provider, model: config.model.model }
-    : undefined;
+  const model = resolveModel(config.model, (message) => ctx.logger.warn(message));
 
   const bot = createIlinkBot({ storageDir, logLevel: config.logLevel });
   const store = new JsonFileBridgeStore(join(storageDir, "bridge-state.json"));
@@ -90,6 +100,7 @@ export function apply(ctx: Context, config: PluginConfig): void {
   ctx.on("session/event", (session, event) => bridge.onSessionEvent(session, event));
 
   ctx.effect(() => {
+    let active = true;
     const sweepTimer = setInterval(() => {
       void bridge.sweepIdle().catch((error) => {
         ctx.logger.warn(`wechat-ilink: idle sweep failed: ${String(error)}`);
@@ -97,18 +108,22 @@ export function apply(ctx: Context, config: PluginConfig): void {
     }, 60_000);
     void (async () => {
       await store.load();
+      if (!active) return;
       ctx.logger.info(`wechat-ilink: connecting to WeChat iLink (${config.allowUsers.length} allowlisted user(s))`);
       await bot.login();
+      if (!active) return;
       bot.onMessage((msg) => {
         void bridge.handleMessage(msg.userId, msg.type, msg.text)
           .catch((error) => ctx.logger.warn(`wechat-ilink: message handling failed: ${String(error)}`));
       });
       await bot.start();
+      if (!active) return;
       ctx.logger.info("wechat-ilink: bot is running");
     })().catch((error) => {
       ctx.logger.error(`wechat-ilink: startup failed: ${String(error)}`);
     });
     return () => {
+      active = false;
       clearInterval(sweepTimer);
       bot.stop();
       void bridge.dispose().catch(() => {});
